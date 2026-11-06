@@ -10,8 +10,8 @@ import re
 from fastapi import HTTPException
 from app.core.database import supabase
 from app.services.event_schedule_policy import validate_lead_time
+from app.services.event_queries import apply_active_event_filter, month_window
 from datetime import datetime, date
-from calendar import monthrange
 
 # Sufijo de zona horaria al final de un timestamp ISO 8601: ``Z``, ``+00:00``, ``-0400`` o ``+05``.
 _TZ_SUFFIX = re.compile(r"(Z|[+-]\d{2}(:?\d{2})?)$")
@@ -88,15 +88,6 @@ class SchoolAdminEventService:
         )
         return [d["doctor_id"] for d in res.data] if res.data else []
 
-    def _base_event_filter(self):
-        """Condiciones base de un evento vigente: ni cancelado ni eliminado.
-
-        Returns:
-            dict: ``{"is_canceled": False, "is_deleted": False}``, pensado para
-            reutilizarse como filtro.
-        """
-        return {"is_canceled": False, "is_deleted": False}
-
     @staticmethod
     def _with_utc_offset(value: str | None) -> str | None:
         """Garantiza que un timestamp ISO 8601 lleve zona horaria.
@@ -134,11 +125,9 @@ class SchoolAdminEventService:
             HTTPException: 403 si el evento pertenece a otra escuela.
         """
         event_res = (
-            supabase.table("event")
-            .select("*")
-            .eq("id", event_id)
-            .eq("is_canceled", False)
-            .eq("is_deleted", False)
+            apply_active_event_filter(
+                supabase.table("event").select("*").eq("id", event_id)
+            )
             .execute()
         )
         if not event_res.data:
@@ -295,11 +284,9 @@ class SchoolAdminEventService:
 
         # Contar total de eventos activos
         count_res = (
-            supabase.table("event")
-            .select("id", count="exact")
-            .in_("id", event_ids)
-            .eq("is_canceled", False)
-            .eq("is_deleted", False)
+            apply_active_event_filter(
+                supabase.table("event").select("id", count="exact").in_("id", event_ids)
+            )
             .execute()
         )
         total = count_res.count or 0
@@ -309,11 +296,11 @@ class SchoolAdminEventService:
         # Paginación
         offset = (page - 1) * size
         events_res = (
-            supabase.table("event")
-            .select("id, title, description, init_time, ent_time, created_at")
-            .in_("id", event_ids)
-            .eq("is_canceled", False)
-            .eq("is_deleted", False)
+            apply_active_event_filter(
+                supabase.table("event")
+                .select("id, title, description, init_time, ent_time, created_at")
+                .in_("id", event_ids)
+            )
             .order("init_time", desc=True)
             .range(offset, offset + size - 1)
             .execute()
@@ -346,15 +333,13 @@ class SchoolAdminEventService:
 
         Raises:
             HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
-            calendar.IllegalMonthError: Si ``month`` queda fuera del rango 1-12.
+            ValueError: Si ``month`` queda fuera del rango 1-12.
         """
         admin = self._get_admin_record(user_id)
         sch_admin_id = admin["sch_admin_id"]
 
-        # Calcular rango del mes
-        _, last_day = monthrange(year, month)
-        start_date = f"{year}-{month:02d}-01T00:00:00+00:00"
-        end_date = f"{year}-{month:02d}-{last_day}T23:59:59+00:00"
+        # Calcular rango del mes (ventana semiabierta [inicio, siguiente))
+        start_date, next_month_start = month_window(year, month)
 
         # Obtener IDs de eventos del admin
         part_res = (
@@ -371,13 +356,13 @@ class SchoolAdminEventService:
 
         # Filtrar eventos por rango de fechas
         events_res = (
-            supabase.table("event")
-            .select("id, title, description, init_time, ent_time, created_at")
-            .in_("id", event_ids)
-            .eq("is_canceled", False)
-            .eq("is_deleted", False)
+            apply_active_event_filter(
+                supabase.table("event")
+                .select("id, title, description, init_time, ent_time, created_at")
+                .in_("id", event_ids)
+            )
             .gte("init_time", start_date)
-            .lte("init_time", end_date)
+            .lt("init_time", next_month_start)
             .order("init_time", desc=False)
             .execute()
         )
