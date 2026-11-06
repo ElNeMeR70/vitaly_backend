@@ -12,7 +12,7 @@ Cambios concretos:
 4. **Esquemas tipados** `DoctorEventRead` y `DoctorEventMonthRead` en `app/schemas/event.py`. El contrato `{ data, year, month, total }` replica el `by-month` del administrador para que el frontend reutilice la forma que ya conoce, pero declarado como `APIResponse[DoctorEventMonthRead]` en lugar del `APIResponse[dict]` legado, así que la forma del evento queda documentada en `/docs`. `title` y `ent_time` se declaran opcionales a propósito: con ellos obligatorios, una fila heredada con esos campos a nulo degradaba a 500 **el mes completo** del médico, porque `ResponseValidationError` no pasa por los handlers globales de `app/main.py`.
 5. **Helper compartido `app/services/event_queries.py`** (`month_window`, `apply_active_event_filter`), usado por los dos portales. Corrige un bug que ya existía en el servicio del administrador y que este PR habría duplicado: la ventana del mes cerraba en `23:59:59`, así que un evento que empezaba en el último segundo del mes quedaba fuera de ese mes **y** del siguiente, es decir, invisible en todo `by-month`. Ahora la ventana es semiabierta `[inicio, siguiente)`. Sustituye además a `_base_event_filter`, que llevaba desde su creación sin un solo call site.
 6. **Errores inesperados envueltos.** Las consultas pasan por un helper que registra el fallo con `logger.exception` y lo relanza como `HTTPException(500)`, como exige `CLAUDE.md` §1. Antes un `APIError` de postgrest salía como 500 en texto plano, sin envelope.
-7. **Tests** en `tests/test_doctor_events.py` (45 casos) sobre un falso Supabase que **aplica** los filtros en memoria, en lugar de un `MagicMock` que devuelve filas predefinidas. La primera versión de este PR usaba stubs y sobrevivía a mutaciones tan groseras como fijar la longitud del mes en 30 días, invertir el orden cronológico o eliminar el filtro por escuela; esas mutaciones ahora fallan.
+7. **Tests** en `tests/test_doctor_events.py` (48 casos) sobre un falso Supabase que **aplica** los filtros en memoria, en lugar de un `MagicMock` que devuelve filas predefinidas. La primera versión de este PR usaba stubs y sobrevivía a mutaciones tan groseras como fijar la longitud del mes en 30 días, invertir el orden cronológico o eliminar el filtro por escuela; esas mutaciones ahora fallan.
 
 Fuera de alcance: el endpoint de detalle `GET /doctor/events/{id}`, que queda para un issue aparte (decisión abierta registrada en el issue).
 
@@ -41,6 +41,8 @@ Para revisar por partes, los commits son unidades de trabajo independientes y se
 ### Limitaciones conocidas (no introducidas por este PR)
 
 - **Offsets horarios.** La ventana del mes ancla en UTC, pero `create_event` guarda `init_time` con el offset que envíe el cliente sin normalizar. Con clientes en husos distintos, un evento de la noche del último día puede caer en el mes contiguo. `app/services/event_schedule_policy.py` difiere explícitamente el saneamiento de offsets al **issue #9**; este PR no lo adelanta, pero lo hereda igual que el `by-month` del administrador.
+- **El valor del estado vigente está deducido, no verificado.** `ACTIVE_DOCTOR_SCHOOL_STATUS = 2` sale de `suspend_doctor` (escribe `1`) y `reactivate_doctor` (escribe `2`). En contra: `app/services/auth_service.py:136` documenta el `2` como *"Estado 'Inactivo/Pendiente' usualmente"* sobre `school_administrator`, y el backend **nunca** inserta en `doctor_to_school`, así que el estado inicial de un vínculo no consta en el código. Es la suposición más consecuente de esta PR: si el `2` no significa vigente, todos los médicos reciben `200` con la agenda vacía y nada delata la causa. **Verificar antes de fusionar** con `SELECT status_id, status_name FROM system_status;` y `SELECT status, count(*) FROM doctor_to_school GROUP BY 1;`.
+- **Convocar a un médico suspendido se acepta en silencio.** `_get_school_doctor_ids` no filtra por estado, así que un administrador puede convocar a un médico suspendido, recibir `200` y que el evento nunca le llegue. Se deja fuera de esta PR a propósito, con borrador de issue en `docs/issues/2026-11-06-convocar-medico-suspendido.md`.
 - **Lista `IN` sin cota.** Se leen todas las participaciones históricas del médico y sus ids viajan como parámetro de URL a PostgREST. Para un médico con años de historial en varias escuelas la URL puede crecer hasta rozar el límite de la cabecera de petición. El patrón viene del servicio del administrador; acotarlo requiere mover el filtro de fechas al lado del servidor (función Postgres y migración), por lo que merece issue propio.
 
 ## Tipo de cambio
@@ -59,7 +61,7 @@ Marque con una x dentro de los `[]` los que apliquen
 
 ## ¿Cómo se ha probado esto?
 
-Pruebas automatizadas (`pytest`): **441 pasan**, 45 de ellas en `tests/test_doctor_events.py`. `ruff check app/ tests/` limpio. La suite se validó por mutación: fijar la longitud del mes, invertir el orden, cerrar la ventana en `lte`, quitar el filtro `is_canceled`, quitar el filtro por `id_doctor` y quitar la lista blanca de escuela vigente hacen fallar tests.
+Pruebas automatizadas (`pytest`): **454 pasan**, 48 de ellas en `tests/test_doctor_events.py`. `ruff check app/ tests/` limpio. La suite se validó por mutación: fijar la longitud del mes, invertir el orden, cerrar la ventana en `lte`, quitar el filtro `is_canceled`, quitar el filtro por `id_doctor` y quitar la lista blanca de escuela vigente hacen fallar tests.
 
 Para la prueba manual hace falta un evento creado por un admin de escuela con `doctor_ids: [<doc_id>]` dentro del mes a consultar, y el token del médico de ese `doc_id`:
 
@@ -92,7 +94,7 @@ Para la prueba manual hace falta un evento creado por un admin de escuela con `d
 - [x] Mis cambios no generan nuevas advertencias
 - [x] Mis cambios pasan el build y lint del proyecto localmente *(`ruff check app/ tests/` sin hallazgos)*
 - [x] He agregado pruebas que prueban que mi solución es efectiva o que mi función funciona *(validadas por mutación, ver arriba)*
-- [x] Las pruebas unitarias nuevas y existentes pasan localmente con mis cambios *(441 passed)*
+- [x] Las pruebas unitarias nuevas y existentes pasan localmente con mis cambios *(454 passed)*
 
 > Advertencia honesta para quien revise: los tests usan un falso Supabase en memoria. Prueban que los filtros se aplican y qué resultado producen, pero **no** prueban aislamiento real contra PostgreSQL. Verificar que un médico suspendido deja de ver la agenda contra una instancia real sigue siendo una comprobación manual (está en la lista de arriba).
 
