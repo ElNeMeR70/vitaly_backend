@@ -573,3 +573,75 @@ def test_admin_month_is_ordered_chronologically():
     result = _run_admin_month(events)
     assert [e["id"] for e in result["data"]] == [2, 3, 1]
     assert result["total"] == 3
+
+
+# ──────────────────────────────────────────────────────────
+# 10. GET / - Paginación (sobre un falso Supabase que filtra)
+# ──────────────────────────────────────────────────────────
+#
+# Los tests de la sección 2 usan el MagicMock encadenable, que devuelve las
+# mismas filas se pagine como se pagine: con ellos solos se podía ignorar el
+# parámetro 'page' o devolver size+1 filas sin que fallara nada.
+
+def _paged_db(events):
+    """Base de datos con el admin de ADMIN_RECORD convocando cada evento."""
+    return FakeSupabase(
+        school_administrator=[{
+            "sch_admin_id": ADMIN_RECORD["sch_admin_id"],
+            "school_id": ADMIN_RECORD["school_id"],
+            "user_id": 4,
+        }],
+        event_participation=[
+            {
+                "id_event": e["id"],
+                "id_school_admin": ADMIN_RECORD["sch_admin_id"],
+                "is_deleted": False,
+            }
+            for e in events
+        ],
+        event=events,
+    )
+
+
+def _run_admin_events(events, page, size):
+    with patch(f"{SERVICE_MODULE}.supabase", _paged_db(events)):
+        return school_admin_event_service.get_events(user_id=4, page=page, size=size)
+
+
+def test_admin_events_pagination_slices_by_page():
+    """Cada página devuelve su tramo, y 'total' cuenta el conjunto completo."""
+    events = [
+        _admin_event(i, f"2026-04-{i:02d}T09:00:00+00:00")
+        for i in range(1, 8)  # 7 eventos
+    ]
+    first = _run_admin_events(events, page=1, size=3)
+    second = _run_admin_events(events, page=2, size=3)
+    third = _run_admin_events(events, page=3, size=3)
+
+    # Orden descendente por init_time: 7, 6, 5 | 4, 3, 2 | 1
+    assert [e["id"] for e in first["data"]] == [7, 6, 5]
+    assert [e["id"] for e in second["data"]] == [4, 3, 2]
+    assert [e["id"] for e in third["data"]] == [1]
+    # 'total' es el total de la colección, no el de la página.
+    assert first["total"] == second["total"] == third["total"] == 7
+    assert first["page"] == 1 and first["size"] == 3
+
+
+def test_admin_events_pagination_excludes_canceled_from_the_count():
+    """Los eventos no vigentes no cuentan ni aparecen."""
+    events = [
+        _admin_event(1, "2026-04-01T09:00:00+00:00"),
+        _admin_event(2, "2026-04-02T09:00:00+00:00", is_canceled=True),
+        _admin_event(3, "2026-04-03T09:00:00+00:00", is_deleted=True),
+    ]
+    result = _run_admin_events(events, page=1, size=20)
+    assert [e["id"] for e in result["data"]] == [1]
+    assert result["total"] == 1
+
+
+def test_admin_events_page_beyond_the_end_is_empty():
+    """Una página más allá del final devuelve lista vacía, no un error."""
+    events = [_admin_event(1, "2026-04-01T09:00:00+00:00")]
+    result = _run_admin_events(events, page=5, size=20)
+    assert result["data"] == []
+    assert result["total"] == 1

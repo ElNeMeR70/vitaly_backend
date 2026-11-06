@@ -195,12 +195,16 @@ class DoctorEventService:
         # Calcular rango del mes (ventana semiabierta [inicio, siguiente))
         start_date, next_month_start = month_window(year, month)
 
-        # Participaciones activas del médico: única fuente del alcance
+        # Participaciones activas del médico: única fuente del alcance.
+        # No se filtra por 'event_participation.is_canceled' a propósito:
+        # 'cancel_event' cancela siempre el evento junto con sus participaciones,
+        # así que el filtro de vigencia sobre 'event' ya lo cubre, y 'create_event'
+        # no fija la columna al insertar. Si no tuviera DEFAULT false, filtrarla
+        # descartaría los NULL y vaciaría la agenda de todos los médicos.
         part_res = self._run(
             supabase.table("event_participation")
             .select("id_event, id_school_admin")
             .eq("id_doctor", doc_id)
-            .eq("is_canceled", False)
             .eq("is_deleted", False),
             "las participaciones del médico",
         )

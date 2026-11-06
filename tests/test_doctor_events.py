@@ -80,13 +80,28 @@ def participation_row(event_id, *, doctor_id=DOC_ID, sch_admin_id=SCH_ADMIN_ID,
     }
 
 
+#: Filas de una segunda médica, presentes en TODA base de prueba. Sin ellas, las
+#: tablas que se filtran por identidad contienen una sola fila y el filtro
+#: '.eq("doctor_id", ...)' se puede borrar sin que falle un solo test.
+OTHER_DOCTOR_ROWS = [{"doc_id": OTHER_DOC_ID, "user_id": 21}]
+OTHER_DOCTOR_LINKS = [
+    {"doctor_id": OTHER_DOC_ID, "school_id": SCHOOL_ID, "status": ACTIVE_DOCTOR_SCHOOL_STATUS},
+    {"doctor_id": OTHER_DOC_ID, "school_id": OTHER_SCHOOL_ID, "status": ACTIVE_DOCTOR_SCHOOL_STATUS},
+]
+
+
 def build_db(events, participations, *, links=None, administrators=None, schools=None):
-    """Assembles a coherent fake database around the rows under test."""
+    """Assembles a coherent fake database around the rows under test.
+
+    Las tablas 'doctor' y 'doctor_to_school' incluyen siempre las filas de una
+    segunda médica, para que un filtro por identidad que se pierda cambie el
+    resultado en lugar de pasar desapercibido.
+    """
     return FakeSupabase(
-        doctor=[{"doc_id": DOC_ID, "user_id": USER_ID}],
-        doctor_to_school=links if links is not None else [
+        doctor=[{"doc_id": DOC_ID, "user_id": USER_ID}] + OTHER_DOCTOR_ROWS,
+        doctor_to_school=(links if links is not None else [
             {"doctor_id": DOC_ID, "school_id": SCHOOL_ID, "status": ACTIVE_DOCTOR_SCHOOL_STATUS},
-        ],
+        ]) + OTHER_DOCTOR_LINKS,
         event_participation=participations,
         event=events,
         school_administrator=administrators if administrators is not None else [
@@ -229,18 +244,22 @@ def test_excludes_canceled_and_deleted_events():
     assert [e["id"] for e in result["data"]] == [2]
 
 
-def test_excludes_canceled_and_deleted_participations():
-    """Una participación cancelada o eliminada deja de dar acceso al evento."""
+def test_excludes_deleted_participations():
+    """Una participación eliminada deja de dar acceso al evento.
+
+    No hay caso para 'participation.is_canceled': 'cancel_event' cancela el
+    evento junto con sus participaciones, así que el filtro sobre 'event' ya lo
+    cubre, y el servicio no lee esa columna (ver el comentario en
+    'get_events_by_month').
+    """
     result = run_by_month(build_db(
         events=[
             event_row(2, "2026-04-15T09:00:00+00:00"),
-            event_row(3, "2026-04-16T09:00:00+00:00"),
-            event_row(4, "2026-04-17T09:00:00+00:00"),
+            event_row(3, "2026-04-17T09:00:00+00:00"),
         ],
         participations=[
             participation_row(2),
-            participation_row(3, is_canceled=True),
-            participation_row(4, is_deleted=True),
+            participation_row(3, is_deleted=True),
         ],
     ))
     assert [e["id"] for e in result["data"]] == [2]
@@ -295,6 +314,33 @@ def test_suspended_school_link_hides_its_events():
     assert result["data"][0]["school_id"] == OTHER_SCHOOL_ID
 
 
+def test_another_doctors_active_link_does_not_grant_access():
+    """El vínculo vigente de OTRA médica con la misma escuela no abre la agenda.
+
+    Sin esta comprobación, borrar el '.eq("doctor_id", ...)' de
+    '_get_active_school_ids' degrada la lista blanca a "cualquier escuela que
+    tenga alguna médica vigente" y el suspendido recupera el acceso.
+    """
+    fake = build_db(
+        events=[event_row(2, "2026-04-15T09:00:00+00:00")],
+        participations=[participation_row(2)],
+        # La médica 7 está suspendida en la escuela 1; la 8 sigue vigente allí
+        # (la añade build_db). Solo cuenta el vínculo de quien consulta.
+        links=[{"doctor_id": DOC_ID, "school_id": SCHOOL_ID, "status": SUSPENDED_STATUS}],
+    )
+    assert run_by_month(fake) == {"data": [], "year": 2026, "month": 4, "total": 0}
+
+
+def test_another_doctors_profile_does_not_resolve_the_doc_id():
+    """El doc_id se resuelve por user_id; la fila de otra médica no sirve."""
+    fake = build_db(
+        events=[event_row(2, "2026-04-15T09:00:00+00:00")],
+        participations=[participation_row(2, doctor_id=OTHER_DOC_ID)],
+    )
+    # El usuario autenticado es el 20 (doc_id 7); la participación es de la 8.
+    assert run_by_month(fake)["total"] == 0
+
+
 def test_doctor_without_any_active_link_sees_nothing():
     """Sin ningún vínculo vigente la agenda va vacía, no 404."""
     result = run_by_month(build_db(
@@ -321,6 +367,19 @@ def test_event_without_resolvable_school_is_dropped():
         administrators=[],
     ))
     assert missing_admin["data"] == [] and missing_admin["total"] == 0
+
+
+def test_event_resolves_its_school_from_any_participation_that_has_one():
+    """Con dos participaciones del mismo evento, una sin administrador, gana la que sí lo tiene."""
+    result = run_by_month(build_db(
+        events=[event_row(2, "2026-04-15T09:00:00+00:00")],
+        participations=[
+            participation_row(2, sch_admin_id=None),   # llega primero
+            participation_row(2, sch_admin_id=SCH_ADMIN_ID),
+        ],
+    ))
+    assert result["total"] == 1
+    assert result["data"][0]["school_id"] == SCHOOL_ID
 
 
 def test_school_name_may_be_null_without_hiding_the_event():
@@ -363,7 +422,7 @@ def test_each_event_carries_its_own_school():
 # 4. Ventana del mes
 # ──────────────────────────────────────────────────────────
 
-def test_month_window_is_half_open_at_both_ends():
+def test_month_window_is_closed_at_the_start_and_open_at_the_end():
     """Incluye el primer instante y el último segundo del mes; excluye el siguiente."""
     events = [
         event_row(1, "2026-03-31T23:59:59+00:00", title="Marzo"),

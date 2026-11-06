@@ -5,11 +5,44 @@ Un ``MagicMock`` encadenable devuelve las filas que se le preparan sin mirar los
 produce el mismo resultado y el test pasa igual. Este doble sí filtra, proyecta
 y ordena, de modo que un filtro perdido cambia el resultado y rompe el test.
 
-Las marcas de tiempo se comparan como cadenas, que es el orden de PostgreSQL
-siempre que todas las filas de un mismo test usen el mismo offset UTC.
+Fidelidad con PostgREST/PostgreSQL, donde importa:
+
+- ``eq``/``neq`` nunca casan con ``NULL``, igual que en SQL.
+- Las comparaciones de rango parsean la marca de tiempo en lugar de comparar
+  cadenas: ``2026-04-30T20:00:00-04:00`` y ``2026-05-01T00:00:00+00:00`` son el
+  mismo instante, y comparados como texto darían resultados opuestos.
+- ``order`` ascendente deja los ``NULL`` al final, como el `NULLS LAST` por
+  defecto de PostgreSQL.
+- ``count="exact"`` se captura antes de aplicar ``range``/``limit``, porque el
+  ``Content-Range`` de PostgREST cuenta el total, no la página.
+
+Sigue siendo un doble: no valida nombres de columna (PostgREST devolvería 400 a
+una columna inexistente) ni implementa joins anidados.
 """
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
+
+_MISSING = object()
+
+
+def _as_instant(value):
+    """Convierte una marca de tiempo ISO 8601 en un instante comparable.
+
+    Devuelve ``None`` si el valor no es una fecha, para que el llamante lo trate
+    como ``NULL``. Un valor sin zona horaria se interpreta como UTC, igual que
+    ``app.services.event_schedule_policy.to_utc``.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 class FakeQuery:
@@ -19,47 +52,78 @@ class FakeQuery:
         self._rows = [dict(row) for row in rows]
         self._columns: list[str] | None = None
         self._count = False
+        self._total = None
         self._fail = fail
 
+    # ── Proyección ────────────────────────────────────────
     def select(self, columns: str = "*", count=None):
         if columns != "*":
             self._columns = [c.strip() for c in columns.split(",")]
         self._count = count is not None
         return self
 
+    # ── Filtros de igualdad ───────────────────────────────
     def eq(self, column, value):
-        self._rows = [r for r in self._rows if r.get(column) == value]
+        self._rows = [r for r in self._rows if r.get(column, _MISSING) == value]
         return self
 
     def neq(self, column, value):
-        self._rows = [r for r in self._rows if r.get(column) != value]
+        # SQL: 'col <> v' descarta los NULL, no los conserva.
+        self._rows = [
+            r for r in self._rows
+            if r.get(column, _MISSING) is not _MISSING
+            and r.get(column) is not None
+            and r[column] != value
+        ]
         return self
 
     def in_(self, column, values):
-        self._rows = [r for r in self._rows if r.get(column) in values]
+        self._rows = [r for r in self._rows if r.get(column, _MISSING) in values]
+        return self
+
+    # ── Filtros de rango (sobre instantes, no sobre texto) ─
+    def _compare(self, column, value, keep):
+        bound = _as_instant(value)
+        if bound is None:  # columna no temporal: comparación directa
+            self._rows = [
+                r for r in self._rows
+                if r.get(column) is not None and keep(r[column], value)
+            ]
+            return self
+        self._rows = [
+            r for r in self._rows
+            if _as_instant(r.get(column)) is not None and keep(_as_instant(r[column]), bound)
+        ]
         return self
 
     def gte(self, column, value):
-        self._rows = [r for r in self._rows if r.get(column) is not None and r[column] >= value]
-        return self
+        return self._compare(column, value, lambda a, b: a >= b)
 
     def lte(self, column, value):
-        self._rows = [r for r in self._rows if r.get(column) is not None and r[column] <= value]
-        return self
+        return self._compare(column, value, lambda a, b: a <= b)
 
     def lt(self, column, value):
-        self._rows = [r for r in self._rows if r.get(column) is not None and r[column] < value]
-        return self
+        return self._compare(column, value, lambda a, b: a < b)
 
+    def gt(self, column, value):
+        return self._compare(column, value, lambda a, b: a > b)
+
+    # ── Orden y paginación ────────────────────────────────
     def order(self, column, desc=False):
-        self._rows.sort(key=lambda r: r.get(column) or "", reverse=desc)
+        # PostgreSQL: ASC deja los NULL al final; DESC, al principio.
+        self._rows.sort(
+            key=lambda r: (r.get(column) is None, r.get(column) if r.get(column) is not None else ""),
+            reverse=desc,
+        )
         return self
 
     def range(self, start, end):
+        self._total = len(self._rows)   # el total se cuenta antes de recortar
         self._rows = self._rows[start:end + 1]
         return self
 
     def limit(self, count):
+        self._total = len(self._rows)
         self._rows = self._rows[:count]
         return self
 
@@ -69,7 +133,7 @@ class FakeQuery:
         if self._fail:
             raise RuntimeError("postgrest unavailable")
         rows = self._rows
-        total = len(rows)
+        total = self._total if self._total is not None else len(rows)
         if self._columns is not None:
             rows = [{c: r.get(c) for c in self._columns} for r in rows]
         return SimpleNamespace(data=rows, count=total if self._count else None)

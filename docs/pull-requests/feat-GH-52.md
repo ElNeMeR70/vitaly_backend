@@ -20,6 +20,24 @@ Sin dependencias nuevas, sin variables de entorno nuevas y sin cambios de esquem
 
 Closes #52
 
+### Tamaño de la PR: `size:exception` aceptada
+
+`vitaly-chained-pr` corta en **400 líneas cambiadas**; esta PR tiene **1360** (453 en `app/`, el resto tests y documentación). El mantenedor acepta explícitamente la excepción de tamaño en lugar de trocear en PRs encadenadas.
+
+Justificación: el refactor del helper compartido (`event_queries.py`) y la funcionalidad del médico se validan mutuamente. Separarlos dejaría una primera PR que cambia el comportamiento del `by-month` del administrador sin ningún consumidor nuevo que lo justifique, y una segunda que depende de la primera para no reintroducir el bug de la ventana. El grueso del diff además no es lógica: de las 1360 líneas, unas 900 son tests y documentación.
+
+Para revisar por partes, los commits son unidades de trabajo independientes y se pueden leer en orden:
+
+| Commit | Qué entrega |
+|---|---|
+| `003b6a5` | Borrador del issue (solo documentación) |
+| `cce26a3` | Funcionalidad: esquemas, servicio, endpoint, router y tests |
+| `c01ee81` | Borrador de PR inicial (solo documentación) |
+| `62ecd8d` | Helper compartido y corrección de la ventana del mes en ambos portales |
+| `7f1e3ae` | Correcciones de la revisión adversarial: escuela vigente, envelope en 500, esquema resiliente, suite reescrita |
+| `44a7432` | Cobertura del helper compartido en el lado del administrador |
+| `261e2d0` | Este borrador actualizado |
+
 ### Limitaciones conocidas (no introducidas por este PR)
 
 - **Offsets horarios.** La ventana del mes ancla en UTC, pero `create_event` guarda `init_time` con el offset que envíe el cliente sin normalizar. Con clientes en husos distintos, un evento de la noche del último día puede caer en el mes contiguo. `app/services/event_schedule_policy.py` difiere explícitamente el saneamiento de offsets al **issue #9**; este PR no lo adelanta, pero lo hereda igual que el `by-month` del administrador.
