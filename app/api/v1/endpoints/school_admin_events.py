@@ -141,9 +141,11 @@ def get_events_by_month(
 @router.get("/{event_id}", response_model=APIResponse[dict],
     summary="Obtener detalle de un evento",
     description=(
-        "Retorna un evento con sus datos base, los salones vinculados (grado, nivel y "
-        "sección), los médicos vinculados (nombre y especialidad) y el administrador que lo "
-        "creó. Solo expone eventos vigentes de la escuela del administrador."
+        "Retorna un evento con sus datos base (incluidas `created_at` y `updated_at`, esta "
+        "última en ISO 8601 con zona horaria o `null` si no tiene valor), los salones "
+        "vinculados (grado, nivel y sección), los médicos vinculados (nombre y especialidad) "
+        "y el administrador que lo creó. Solo expone eventos vigentes de la escuela del "
+        "administrador."
     ),
     responses=TENANT_DETAIL_RESPONSES,
 )

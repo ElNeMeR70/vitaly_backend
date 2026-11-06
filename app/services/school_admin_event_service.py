@@ -5,11 +5,16 @@ El alcance se resuelve siempre en el servidor: el ``sch_admin_id`` y el
 tiene una participación registrada a nombre de ese administrador.
 """
 
+import re
+
 from fastapi import HTTPException
 from app.core.database import supabase
 from app.services.event_schedule_policy import validate_lead_time
 from datetime import datetime, date
 from calendar import monthrange
+
+# Sufijo de zona horaria al final de un timestamp ISO 8601: ``Z``, ``+00:00``, ``-0400`` o ``+05``.
+_TZ_SUFFIX = re.compile(r"(Z|[+-]\d{2}(:?\d{2})?)$")
 
 
 class SchoolAdminEventService:
@@ -91,6 +96,25 @@ class SchoolAdminEventService:
             reutilizarse como filtro.
         """
         return {"is_canceled": False, "is_deleted": False}
+
+    @staticmethod
+    def _with_utc_offset(value: str | None) -> str | None:
+        """Garantiza que un timestamp ISO 8601 lleve zona horaria.
+
+        ``update_event`` escribe ``updated_at`` con ``datetime.utcnow()``, que no lleva
+        offset; si la columna lo devuelve así, el cliente lo leería como hora local.
+
+        Args:
+            value: Timestamp tal como lo devuelve la base de datos, o ``None``.
+
+        Returns:
+            str | None: El mismo valor si ya trae offset, con ``+00:00`` añadido si no,
+            o ``None`` si no hay valor.
+        """
+        if not value:
+            return None
+        # Se mira solo la parte de la hora para no confundir el día (``-05``) con un offset
+        return value if _TZ_SUFFIX.search(value[10:]) else f"{value}+00:00"
 
     def _validate_event_ownership(self, event_id: int, sch_admin_id: int) -> dict:
         """Comprueba que un evento existe y pertenece al administrador indicado.
@@ -485,6 +509,7 @@ class SchoolAdminEventService:
                 "init_time": event["init_time"],
                 "ent_time": event["ent_time"],
                 "created_at": event.get("created_at"),
+                "updated_at": self._with_utc_offset(event.get("updated_at")),
             },
             "classrooms": classrooms_info,
             "doctors": doctors_info,
