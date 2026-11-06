@@ -337,6 +337,46 @@ def test_get_event_detail_foreign_school_returns_403():
     assert "No tienes permiso" in exc.value.detail
 
 
+def _detail_with_updated_at(updated_at):
+    """Ejecuta get_event_detail con una fila de evento que trae el ``updated_at`` dado."""
+    event_row = {
+        "id": 1,
+        "title": "Revisión General",
+        "description": None,
+        "init_time": "2026-11-10T12:00:00+00:00",
+        "ent_time": "2026-11-10T14:00:00+00:00",
+        "created_at": "2026-11-01T09:00:00+00:00",
+        "updated_at": updated_at,
+    }
+    with patch.object(school_admin_event_service, "_get_admin_record", return_value=ADMIN_RECORD), \
+         patch(f"{SERVICE_MODULE}.supabase") as mock_supabase:
+        route_tables(
+            mock_supabase,
+            event=make_query([event_row]),
+            event_participation=make_query([{"id": 1, "id_classroom": None, "id_doctor": None, "id_school_admin": None}]),
+        )
+        return school_admin_event_service.get_event_detail(user_id=4, event_id=1)
+
+
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        ("2026-11-05T14:30:00.123456+00:00", "2026-11-05T14:30:00.123456+00:00"),
+        ("2026-11-05T14:30:00Z", "2026-11-05T14:30:00Z"),
+        ("2026-11-05T10:30:00-04:00", "2026-11-05T10:30:00-04:00"),
+        # datetime.utcnow().isoformat() sin offset: se interpreta como UTC
+        ("2026-11-05T14:30:00.123456", "2026-11-05T14:30:00.123456+00:00"),
+        (None, None),
+    ],
+)
+def test_get_event_detail_includes_updated_at_with_offset(stored, expected):
+    """El detalle expone updated_at siempre con zona horaria (o None si no hay valor)."""
+    result = _detail_with_updated_at(stored)
+
+    assert result["event"]["updated_at"] == expected
+    assert result["event"]["created_at"] == "2026-11-01T09:00:00+00:00"
+
+
 # ──────────────────────────────────────────────────────────
 # 5. PATCH /{event_id}/cancel - Cancelar Evento
 # ──────────────────────────────────────────────────────────
@@ -403,6 +443,25 @@ def test_update_event_invalid_dates_returns_400():
 
     assert exc.value.status_code == 400
     assert "posterior a la de inicio" in exc.value.detail
+
+
+def test_update_event_stores_updated_at_with_offset():
+    """La edición guarda ``updated_at`` con zona horaria, no un datetime ingenuo."""
+    event_row = {
+        "id": 5,
+        "init_time": "2026-05-10T12:00:00Z",
+        "ent_time": "2026-05-10T14:00:00Z",
+    }
+    with patch.object(school_admin_event_service, "_get_admin_record", return_value=ADMIN_RECORD), \
+         patch.object(school_admin_event_service, "_validate_event_ownership", return_value=event_row), \
+         patch(f"{SERVICE_MODULE}.supabase") as mock_supabase:
+        event_query = make_query([{"id": 5, "title": "Nuevo"}])
+        route_tables(mock_supabase, event=event_query)
+        school_admin_event_service.update_event(user_id=4, event_id=5, payload={"title": "Nuevo"})
+
+    stored = event_query.update.call_args.args[0]["updated_at"]
+    # fromisoformat solo resuelve el offset si está presente; sin él, tzinfo es None
+    assert datetime.fromisoformat(stored).tzinfo is not None
 
 
 # ──────────────────────────────────────────────────────────
