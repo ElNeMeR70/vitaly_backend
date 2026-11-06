@@ -60,7 +60,7 @@ def make_query(data=None, count=None) -> MagicMock:
     """Chainable mock for supabase-py queries."""
     query = MagicMock()
     for method in (
-        "select", "eq", "neq", "in_", "is_", "ilike", "gte", "lte",
+        "select", "eq", "neq", "in_", "is_", "ilike", "gte", "lte", "lt",
         "order", "range", "limit", "insert", "update", "delete", "or_"
     ):
         getattr(query, method).return_value = query

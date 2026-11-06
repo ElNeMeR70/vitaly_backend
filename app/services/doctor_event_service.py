@@ -7,11 +7,11 @@ escuela.
 """
 
 import logging
-from calendar import monthrange
 
 from fastapi import HTTPException
 
 from app.core.database import supabase
+from app.services.event_queries import apply_active_event_filter, month_window
 
 logger = logging.getLogger(__name__)
 
@@ -122,14 +122,11 @@ class DoctorEventService:
 
         Raises:
             HTTPException: 403 si el usuario no tiene un perfil de médico asociado.
-            calendar.IllegalMonthError: Si ``month`` queda fuera del rango 1-12.
         """
         doc_id = self._get_doctor_id(user_id)
 
-        # Calcular rango del mes (mismo criterio que el by-month del admin)
-        _, last_day = monthrange(year, month)
-        start_date = f"{year}-{month:02d}-01T00:00:00+00:00"
-        end_date = f"{year}-{month:02d}-{last_day}T23:59:59+00:00"
+        # Calcular rango del mes (ventana semiabierta [inicio, siguiente))
+        start_date, next_month_start = month_window(year, month)
 
         # Participaciones activas del médico: única fuente del alcance
         part_res = (
@@ -153,13 +150,13 @@ class DoctorEventService:
         event_ids = list({p["id_event"] for p in part_res.data})
 
         events_res = (
-            supabase.table("event")
-            .select("id, title, description, init_time, ent_time, created_at")
-            .in_("id", event_ids)
-            .eq("is_canceled", False)
-            .eq("is_deleted", False)
+            apply_active_event_filter(
+                supabase.table("event")
+                .select("id, title, description, init_time, ent_time, created_at")
+                .in_("id", event_ids)
+            )
             .gte("init_time", start_date)
-            .lte("init_time", end_date)
+            .lt("init_time", next_month_start)
             .order("init_time", desc=False)
             .execute()
         )

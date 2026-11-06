@@ -51,7 +51,7 @@ def make_query(data=None, count=None) -> MagicMock:
     """Chainable mock for supabase-py queries."""
     query = MagicMock()
     for method in (
-        "select", "eq", "neq", "in_", "is_", "ilike", "gte", "lte",
+        "select", "eq", "neq", "in_", "is_", "ilike", "gte", "lte", "lt",
         "order", "range", "limit", "insert", "update", "delete", "or_"
     ):
         getattr(query, method).return_value = query
@@ -213,7 +213,7 @@ def test_service_excludes_canceled_deleted_and_other_doctors_events():
     event.eq.assert_any_call("is_deleted", False)
     # Ventana del mes solicitado.
     event.gte.assert_any_call("init_time", "2026-04-01T00:00:00+00:00")
-    event.lte.assert_any_call("init_time", "2026-04-30T23:59:59+00:00")
+    event.lt.assert_any_call("init_time", "2026-05-01T00:00:00+00:00")
 
     assert [e["id"] for e in result["data"]] == [2]
 
