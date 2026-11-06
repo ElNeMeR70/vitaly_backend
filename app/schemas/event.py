@@ -69,25 +69,41 @@ class DoctorEventRead(BaseModel):
     """
 
     id: int = Field(description="Identificador único del evento.")
-    title: str = Field(description="Título del evento mostrado en el calendario.")
+    title: Optional[str] = Field(
+        default=None,
+        description=(
+            "Título del evento mostrado en el calendario. Declarado opcional a "
+            "propósito: una fila heredada con el título a nulo degrada ese evento "
+            "en lugar de tumbar con un 500 el mes entero del médico."
+        ),
+    )
     description: Optional[str] = Field(
         default=None, description="Descripción o detalle del evento; nulo si no se registró."
     )
-    init_time: datetime = Field(description="Fecha y hora de inicio del evento (ISO 8601).")
-    ent_time: datetime = Field(description="Fecha y hora de finalización del evento (ISO 8601).")
+    init_time: datetime = Field(
+        description=(
+            "Fecha y hora de inicio del evento (ISO 8601). Siempre presente: la "
+            "ventana del mes filtra por esta columna, así que una fila sin ella "
+            "nunca entra en el resultado."
+        )
+    )
+    ent_time: Optional[datetime] = Field(
+        default=None,
+        description="Fecha y hora de finalización del evento (ISO 8601); opcional por el mismo motivo que 'title'.",
+    )
     created_at: Optional[datetime] = Field(
         default=None, description="Fecha y hora de creación del registro del evento."
     )
-    school_id: Optional[int] = Field(
-        default=None,
+    school_id: int = Field(
         description=(
-            "ID de la escuela que convocó el evento. Nulo solo si la participación "
-            "perdió la referencia al administrador que la creó."
-        ),
+            "ID de la escuela que convocó el evento. Siempre presente: un evento "
+            "cuya escuela no se puede resolver, o con la que el médico ya no tiene "
+            "vínculo vigente, no se devuelve."
+        )
     )
     school_name: Optional[str] = Field(
         default=None,
-        description="Nombre de la escuela que convocó el evento; nulo bajo la misma condición que 'school_id'.",
+        description="Nombre de la escuela que convocó el evento; nulo solo si la ficha de la escuela no tiene nombre.",
     )
 
 

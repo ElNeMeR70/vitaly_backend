@@ -1,9 +1,12 @@
 """Agenda de eventos escolares del rol médico.
 
-El alcance se resuelve siempre en el servidor: el ``doc_id`` sale del ``user_id``
-autenticado y un evento solo es visible si existe una participación activa a
-nombre de ese médico. El cliente nunca envía un identificador de médico ni de
-escuela.
+El alcance se resuelve siempre en el servidor y exige dos condiciones a la vez:
+el médico debe tener una participación activa en el evento (``doc_id`` derivado
+del ``user_id`` autenticado) y, además, un vínculo **vigente** con la escuela que
+lo convocó (``doctor_to_school.status``). La participación es un hecho histórico
+que nada revoca; el vínculo con la escuela es la autorización viva, y suspender a
+un médico es la única palanca de revocación del producto. El cliente nunca envía
+un identificador de médico ni de escuela.
 """
 
 import logging
@@ -15,6 +18,12 @@ from app.services.event_queries import apply_active_event_filter, month_window
 
 logger = logging.getLogger(__name__)
 
+#: ``system_status`` que la escuela asigna a un médico vigente. Lo escribe
+#: ``SchoolAdminService.reactivate_doctor``; ``suspend_doctor`` escribe 1.
+#: Se usa como lista blanca: cualquier otro estado (suspendido, o uno futuro)
+#: deja de ver los eventos de esa escuela.
+ACTIVE_DOCTOR_SCHOOL_STATUS = 2
+
 
 class DoctorEventService:
     """Consultas de eventos escolares con alcance limitado al médico autenticado."""
@@ -22,6 +31,34 @@ class DoctorEventService:
     # ──────────────────────────────────────────────────────────
     # Helpers internos
     # ──────────────────────────────────────────────────────────
+
+    def _run(self, query, description: str):
+        """Ejecuta una consulta supabase-py traduciendo los fallos al envelope.
+
+        ``app/main.py`` solo registra handlers para ``HTTPException`` y los
+        errores de validación: cualquier otra excepción (ej. ``APIError`` de
+        supabase-py) saldría como un 500 en texto plano, sin el envelope que el
+        frontend espera. Aquí se registra el fallo y se relanza como
+        ``HTTPException(500)``.
+
+        Args:
+            query: Consulta de supabase-py lista para ejecutarse.
+            description: Qué se estaba leyendo, para el registro del error.
+
+        Returns:
+            La respuesta de supabase-py.
+
+        Raises:
+            HTTPException: 500 si la consulta falla por cualquier motivo.
+        """
+        try:
+            return query.execute()
+        except Exception:
+            logger.exception("Fallo al consultar %s para la agenda del médico.", description)
+            raise HTTPException(
+                status_code=500,
+                detail="Ocurrió un error al consultar la agenda de eventos."
+            )
 
     def _get_doctor_id(self, user_id: int) -> int:
         """Resuelve el ``doc_id`` del usuario autenticado.
@@ -38,11 +75,9 @@ class DoctorEventService:
         Raises:
             HTTPException: 403 si el usuario no tiene un perfil de médico asociado.
         """
-        doc_res = (
-            supabase.table("doctor")
-            .select("doc_id")
-            .eq("user_id", user_id)
-            .execute()
+        doc_res = self._run(
+            supabase.table("doctor").select("doc_id").eq("user_id", user_id),
+            "el perfil del médico",
         )
         if not doc_res.data:
             raise HTTPException(
@@ -50,6 +85,29 @@ class DoctorEventService:
                 detail="Tu usuario no tiene un perfil de médico asociado."
             )
         return doc_res.data[0]["doc_id"]
+
+    def _get_active_school_ids(self, doc_id: int) -> set[int]:
+        """Resuelve las escuelas con las que el médico mantiene un vínculo vigente.
+
+        Es la autorización viva del médico: ``suspend_doctor`` solo cambia este
+        estado y no toca las participaciones, así que sin esta comprobación un
+        médico suspendido seguiría leyendo la agenda de esa escuela.
+
+        Args:
+            doc_id: ID del médico ya resuelto en el servidor.
+
+        Returns:
+            set[int]: IDs de escuela donde el estado del vínculo es
+            ``ACTIVE_DOCTOR_SCHOOL_STATUS``. Conjunto vacío si no hay ninguna.
+        """
+        res = self._run(
+            supabase.table("doctor_to_school")
+            .select("school_id")
+            .eq("doctor_id", doc_id)
+            .eq("status", ACTIVE_DOCTOR_SCHOOL_STATUS),
+            "las escuelas vinculadas al médico",
+        )
+        return {row["school_id"] for row in (res.data or []) if row.get("school_id") is not None}
 
     def _resolve_schools_by_admin(self, sch_admin_ids: list[int]) -> dict[int, dict]:
         """Resuelve la escuela de cada administrador que convocó un evento.
@@ -69,11 +127,11 @@ class DoctorEventService:
         if not sch_admin_ids:
             return {}
 
-        admins_res = (
+        admins_res = self._run(
             supabase.table("school_administrator")
             .select("sch_admin_id, school_id")
-            .in_("sch_admin_id", sch_admin_ids)
-            .execute()
+            .in_("sch_admin_id", sch_admin_ids),
+            "los administradores convocantes",
         )
         admins = admins_res.data or []
         if not admins:
@@ -82,11 +140,9 @@ class DoctorEventService:
         school_ids = list({a["school_id"] for a in admins if a.get("school_id")})
         names: dict[int, str] = {}
         if school_ids:
-            schools_res = (
-                supabase.table("school")
-                .select("sch_id, name")
-                .in_("sch_id", school_ids)
-                .execute()
+            schools_res = self._run(
+                supabase.table("school").select("sch_id, name").in_("sch_id", school_ids),
+                "las escuelas de los eventos",
             )
             names = {s["sch_id"]: s.get("name") for s in (schools_res.data or [])}
 
@@ -106,9 +162,11 @@ class DoctorEventService:
         """Lista los eventos del médico que caen dentro de un mes concreto.
 
         Pensado para la vista de calendario: devuelve el mes completo sin paginar,
-        ordenado cronológicamente. Solo incluye eventos vigentes (ni cancelados ni
-        eliminados) con una participación activa del médico autenticado, de modo
-        que los eventos de otros médicos quedan fuera por construcción.
+        ordenado cronológicamente. Un evento solo aparece si cumple las dos
+        condiciones: el médico tiene una participación activa en él (de modo que
+        los eventos de otros médicos quedan fuera por construcción) y la escuela
+        que lo convocó mantiene un vínculo vigente con el médico. Quedan fuera
+        además los eventos cancelados y los eliminados.
 
         Args:
             user_id: ID del médico autenticado (claim ``sub`` del JWT).
@@ -118,38 +176,48 @@ class DoctorEventService:
         Returns:
             dict: ``{"data": [...], "year": int, "month": int, "total": int}``. Cada
             evento incluye ``school_id`` y ``school_name``. Un mes sin eventos
-            devuelve ``data`` vacío y ``total`` en 0.
+            visibles devuelve ``data`` vacío y ``total`` en 0.
 
         Raises:
             HTTPException: 403 si el usuario no tiene un perfil de médico asociado.
+            HTTPException: 500 si falla alguna de las consultas a la base de datos.
         """
+        empty = {"data": [], "year": year, "month": month, "total": 0}
+
         doc_id = self._get_doctor_id(user_id)
+
+        # Un médico sin ningún vínculo vigente no ve agenda, aunque conserve
+        # participaciones históricas de una escuela que lo suspendió.
+        active_school_ids = self._get_active_school_ids(doc_id)
+        if not active_school_ids:
+            return empty
 
         # Calcular rango del mes (ventana semiabierta [inicio, siguiente))
         start_date, next_month_start = month_window(year, month)
 
         # Participaciones activas del médico: única fuente del alcance
-        part_res = (
+        part_res = self._run(
             supabase.table("event_participation")
             .select("id_event, id_school_admin")
             .eq("id_doctor", doc_id)
-            .eq("is_deleted", False)
-            .execute()
+            .eq("is_canceled", False)
+            .eq("is_deleted", False),
+            "las participaciones del médico",
         )
         if not part_res.data:
-            return {"data": [], "year": year, "month": month, "total": 0}
+            return empty
 
         # Un evento puede tener varias participaciones del mismo médico; nos quedamos
         # con la primera que identifique al administrador convocante.
         admin_by_event: dict[int, int] = {}
         for part in part_res.data:
             event_id = part["id_event"]
-            if part.get("id_school_admin") and event_id not in admin_by_event:
+            if part.get("id_school_admin") is not None and event_id not in admin_by_event:
                 admin_by_event[event_id] = part["id_school_admin"]
 
         event_ids = list({p["id_event"] for p in part_res.data})
 
-        events_res = (
+        events_res = self._run(
             apply_active_event_filter(
                 supabase.table("event")
                 .select("id, title, description, init_time, ent_time, created_at")
@@ -157,27 +225,32 @@ class DoctorEventService:
             )
             .gte("init_time", start_date)
             .lt("init_time", next_month_start)
-            .order("init_time", desc=False)
-            .execute()
+            .order("init_time", desc=False),
+            "los eventos del mes",
         )
         events = events_res.data or []
-        if not events:
-            return {"data": [], "year": year, "month": month, "total": 0}
 
         schools_by_admin = self._resolve_schools_by_admin(
             list({admin_by_event[e["id"]] for e in events if e["id"] in admin_by_event})
         )
 
+        # Lista blanca: solo sobrevive el evento cuya escuela se pudo resolver y
+        # sigue vinculada al médico. Un evento sin escuela resoluble se descarta,
+        # porque no hay forma de comprobar que el médico siga autorizado en ella.
+        visible = []
         for event in events:
-            school = schools_by_admin.get(admin_by_event.get(event["id"]), {})
-            event["school_id"] = school.get("school_id")
-            event["school_name"] = school.get("school_name")
+            school = schools_by_admin.get(admin_by_event.get(event["id"]))
+            if not school or school["school_id"] not in active_school_ids:
+                continue
+            event["school_id"] = school["school_id"]
+            event["school_name"] = school["school_name"]
+            visible.append(event)
 
         return {
-            "data": events,
+            "data": visible,
             "year": year,
             "month": month,
-            "total": len(events),
+            "total": len(visible),
         }
 
 
