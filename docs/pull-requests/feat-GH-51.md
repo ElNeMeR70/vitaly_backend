@@ -8,16 +8,19 @@ Closes #51
 
 Cambios realizados:
 1. `app/services/school_admin_event_service.py`: `get_event_detail` añade `updated_at` al diccionario `event`. La fila ya venía completa de `_validate_event_ownership` (`select("*")`), así que no hay consultas nuevas.
-2. Helper `_with_utc_offset`: `update_event` escribe `updated_at` con `datetime.utcnow().isoformat()`, sin zona horaria. Si la columna lo devuelve así, el cliente lo interpretaría como hora local, así que el detalle le añade `+00:00` cuando no trae offset. Los valores que ya traen `Z` u offset no cambian, y `None` sigue siendo `None`.
-3. `app/api/v1/endpoints/school_admin_events.py`: la descripción de OpenAPI del endpoint documenta `created_at` y `updated_at`.
-4. Tests: 5 casos parametrizados en `tests/test_school_admin_events.py` (offset `+00:00`, `Z`, `-04:00`, valor sin offset y `None`).
+2. `cancel_event` y `update_event` guardaban `updated_at` con `datetime.utcnow().isoformat()`, un timestamp ingenuo. Al releerlo no se distingue un valor guardado como UTC de uno que PostgreSQL resolvió en la zona de la sesión, así que el cliente podía recibir un instante desfasado varias horas sin que nada lo delatara. Ahora se escribe con `datetime.now(timezone.utc).isoformat()`, igual que `settings_service`.
+3. Helper `_with_utc_offset`: las filas escritas antes del punto anterior quedaron sin offset, así que el detalle les añade `+00:00` cuando no lo traen. Los valores que ya traen `Z` u offset no cambian, y `None` sigue siendo `None`.
+4. `app/api/v1/endpoints/school_admin_events.py`: la descripción de OpenAPI del endpoint documenta `created_at` y `updated_at`.
+5. Tests: 5 casos parametrizados para el detalle (offset `+00:00`, `Z`, `-04:00`, valor sin offset y `None`) y uno que falla si la edición vuelve a guardar un timestamp sin zona horaria.
 
 Fuera de alcance: `GET /events/` y `GET /events/by-month` siguen sin `updated_at`.
+
+Esta rama se fusionó con `development` para incorporar GH-52 (#54); el conflicto en `school_admin_event_service.py` era el helper nuevo junto a `_base_event_filter`, que `development` sustituyó por `apply_active_event_filter`.
 
 ## Tipo de cambio
 
 - [x] ✨ Nueva funcionalidad (cambio no-breaking que agrega funcionalidad)
-- [ ] 🛠️ Corrección de errores (cambio no-breaking que arregla un error)
+- [x] 🛠️ Corrección de errores (cambio no-breaking que arregla un error)
 - [ ] ❌ Cambio importante (arreglo o característica que haría que la funcionalidad existente no funcionara como se esperaba)
 - [ ] 📝 Actualización de la documentación
 - [ ] 🧹 Code refactoring (modificación de la estructura interna del código sin modificar las APIs)
@@ -34,7 +37,7 @@ Fuera de alcance: `GET /events/` y `GET /events/by-month` siguen sin `updated_at
 
 - Servidor local: `uvicorn app.main:app --reload`
 - Documentación interactiva: `http://localhost:8000/docs`
-- Pruebas automatizadas: `pytest` (401 tests) y `ruff check` sobre los archivos tocados
+- Pruebas automatizadas: `pytest` (460 tests) y `ruff check` sobre los archivos tocados
 
 ## Lista de Verificación
 
