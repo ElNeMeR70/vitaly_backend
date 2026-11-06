@@ -445,6 +445,25 @@ def test_update_event_invalid_dates_returns_400():
     assert "posterior a la de inicio" in exc.value.detail
 
 
+def test_update_event_stores_updated_at_with_offset():
+    """La edición guarda ``updated_at`` con zona horaria, no un datetime ingenuo."""
+    event_row = {
+        "id": 5,
+        "init_time": "2026-05-10T12:00:00Z",
+        "ent_time": "2026-05-10T14:00:00Z",
+    }
+    with patch.object(school_admin_event_service, "_get_admin_record", return_value=ADMIN_RECORD), \
+         patch.object(school_admin_event_service, "_validate_event_ownership", return_value=event_row), \
+         patch(f"{SERVICE_MODULE}.supabase") as mock_supabase:
+        event_query = make_query([{"id": 5, "title": "Nuevo"}])
+        route_tables(mock_supabase, event=event_query)
+        school_admin_event_service.update_event(user_id=4, event_id=5, payload={"title": "Nuevo"})
+
+    stored = event_query.update.call_args.args[0]["updated_at"]
+    # fromisoformat solo resuelve el offset si está presente; sin él, tzinfo es None
+    assert datetime.fromisoformat(stored).tzinfo is not None
+
+
 # ──────────────────────────────────────────────────────────
 # 7. RBAC & Autenticación
 # ──────────────────────────────────────────────────────────

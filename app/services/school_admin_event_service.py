@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from app.core.database import supabase
 from app.services.event_schedule_policy import validate_lead_time
 from app.services.event_queries import apply_active_event_filter, month_window
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
 # Sufijo de zona horaria al final de un timestamp ISO 8601: ``Z``, ``+00:00``, ``-0400`` o ``+05``.
 _TZ_SUFFIX = re.compile(r"(Z|[+-]\d{2}(:?\d{2})?)$")
@@ -92,8 +92,9 @@ class SchoolAdminEventService:
     def _with_utc_offset(value: str | None) -> str | None:
         """Garantiza que un timestamp ISO 8601 lleve zona horaria.
 
-        ``update_event`` escribe ``updated_at`` con ``datetime.utcnow()``, que no lleva
-        offset; si la columna lo devuelve así, el cliente lo leería como hora local.
+        Las ediciones nuevas guardan ``updated_at`` con offset, pero las filas
+        escritas antes de ese cambio quedaron sin él; si la columna devuelve uno
+        de esos valores, el cliente lo leería como hora local.
 
         Args:
             value: Timestamp tal como lo devuelve la base de datos, o ``None``.
@@ -531,13 +532,13 @@ class SchoolAdminEventService:
         # Cancelar el evento
         supabase.table("event").update({
             "is_canceled": True,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", event_id).execute()
 
         # Cancelar las participaciones asociadas
         supabase.table("event_participation").update({
             "is_canceled": True,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id_event", event_id).execute()
 
         return {"event_id": event_id, "status": "canceled"}
@@ -610,7 +611,7 @@ class SchoolAdminEventService:
                 detail="La fecha de finalización debe ser posterior a la de inicio."
             )
 
-        update_data["updated_at"] = datetime.utcnow().isoformat()
+        update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
 
         result = (
             supabase.table("event")
