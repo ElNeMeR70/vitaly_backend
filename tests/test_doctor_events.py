@@ -11,13 +11,11 @@ Adheres strictly to the 5 laws of vitaly-feature-testing:
   4. 200 with data=[] and total=0 for an empty month (never 404).
   5. RBAC matrix: 403 unauthorized role, 401 unauthenticated, 422 query validation.
 
-Why a fake instead of MagicMock: a stub that returns a canned list proves only
-that a filter method was *called*, so mutating the month length, the sort order
-or an `.in_()` left the suite green in the first version of this file.
-`FakeSupabase` below actually applies eq/in_/gte/lt/order over in-memory rows,
-so a dropped or inverted filter changes the result and fails. Timestamps are
-compared as strings, which matches PostgreSQL ordering as long as every fixture
-uses the same UTC offset -- they all use '+00:00'.
+Why `tests.fake_supabase` instead of MagicMock: a stub that returns a canned
+list proves only that a filter method was *called*, so mutating the month
+length, the sort order or an `.in_()` left the suite green in the first version
+of this file. The fake applies the filters over in-memory rows, so a dropped or
+inverted filter changes the result and fails.
 """
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -30,6 +28,7 @@ from app.api.deps import get_current_doctor, get_current_user_token
 from app.core.security import create_access_token
 from app.main import app
 from app.services.auth_service import auth_service
+from tests.fake_supabase import FakeSupabase
 from app.services.doctor_event_service import (
     ACTIVE_DOCTOR_SCHOOL_STATUS,
     doctor_event_service,
@@ -49,67 +48,8 @@ SUSPENDED_STATUS = 1
 
 
 # ──────────────────────────────────────────────────────────
-# Fake supabase-py: applies filters instead of replaying canned rows
+# Filas de prueba (el falso cliente vive en tests/fake_supabase.py)
 # ──────────────────────────────────────────────────────────
-
-class FakeQuery:
-    """Minimal supabase-py query that really filters, projects and sorts."""
-
-    def __init__(self, rows: list[dict], fail: bool = False):
-        self._rows = [dict(row) for row in rows]
-        self._columns: list[str] | None = None
-        self._fail = fail
-
-    def select(self, columns: str = "*", count=None):
-        if columns != "*":
-            self._columns = [c.strip() for c in columns.split(",")]
-        return self
-
-    def eq(self, column, value):
-        self._rows = [r for r in self._rows if r.get(column) == value]
-        return self
-
-    def in_(self, column, values):
-        self._rows = [r for r in self._rows if r.get(column) in values]
-        return self
-
-    def gte(self, column, value):
-        self._rows = [r for r in self._rows if r.get(column) is not None and r[column] >= value]
-        return self
-
-    def lt(self, column, value):
-        self._rows = [r for r in self._rows if r.get(column) is not None and r[column] < value]
-        return self
-
-    def lte(self, column, value):
-        self._rows = [r for r in self._rows if r.get(column) is not None and r[column] <= value]
-        return self
-
-    def order(self, column, desc=False):
-        self._rows.sort(key=lambda r: r.get(column) or "", reverse=desc)
-        return self
-
-    def execute(self):
-        # La E/S real ocurre en execute(), no al construir la consulta: ahí es
-        # donde supabase-py levanta APIError y donde el servicio debe envolverlo.
-        if self._fail:
-            raise RuntimeError("postgrest unavailable")
-        rows = self._rows
-        if self._columns is not None:
-            rows = [{c: r.get(c) for c in self._columns} for r in rows]
-        return SimpleNamespace(data=rows, count=len(rows))
-
-
-class FakeSupabase:
-    """Stand-in for the shared supabase client over an in-memory database."""
-
-    def __init__(self, **tables: list[dict]):
-        self.db = tables
-        self.failing_table: str | None = None
-
-    def table(self, name: str) -> FakeQuery:
-        return FakeQuery(self.db.get(name, []), fail=name == self.failing_table)
-
 
 def event_row(event_id, init_time, *, title="Evaluación Médica",
               is_canceled=False, is_deleted=False, ent_time=..., **extra):

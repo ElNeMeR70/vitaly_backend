@@ -31,6 +31,7 @@ from app.core.security import create_access_token
 from app.main import app
 from app.services.auth_service import auth_service
 from app.services.school_admin_event_service import school_admin_event_service
+from tests.fake_supabase import FakeSupabase
 
 SERVICE_MODULE = "app.services.school_admin_event_service"
 BASE_URL = "/api/v1/school-admin/events"
@@ -476,3 +477,99 @@ def test_events_validation_errors(admin_client, invalid_url):
     assert response.status_code == 422
     body = response.json()
     assert body["success"] is False
+
+
+# ──────────────────────────────────────────────────────────
+# 9. GET /by-month - Ventana del mes (sobre un falso Supabase que filtra)
+# ──────────────────────────────────────────────────────────
+#
+# Los tests de la sección 3 parchean el método del servicio o cortocircuitan con
+# una lista de participaciones vacía, así que nunca llegan a ejercitar el cálculo
+# de la ventana: con ellos solos se podía fijar el rango a enero de 1999 y la
+# suite seguía verde. Estos usan el falso cliente de tests/fake_supabase.py, que
+# aplica los filtros de verdad.
+
+def _month_db(events):
+    """Base de datos mínima con el admin de ADMIN_RECORD convocando cada evento."""
+    return FakeSupabase(
+        school_administrator=[{
+            "sch_admin_id": ADMIN_RECORD["sch_admin_id"],
+            "school_id": ADMIN_RECORD["school_id"],
+            "user_id": 4,
+        }],
+        event_participation=[
+            {
+                "id_event": e["id"],
+                "id_school_admin": ADMIN_RECORD["sch_admin_id"],
+                "is_deleted": False,
+            }
+            for e in events
+        ],
+        event=events,
+    )
+
+
+def _admin_event(event_id, init_time, *, is_canceled=False, is_deleted=False):
+    """Fila con la forma real de 'event'."""
+    return {
+        "id": event_id,
+        "title": f"Evento {event_id}",
+        "description": None,
+        "init_time": init_time,
+        "ent_time": init_time,
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "is_canceled": is_canceled,
+        "is_deleted": is_deleted,
+    }
+
+
+def _run_admin_month(events, year=2026, month=4):
+    with patch(f"{SERVICE_MODULE}.supabase", _month_db(events)):
+        return school_admin_event_service.get_events_by_month(user_id=4, year=year, month=month)
+
+
+def test_admin_month_window_is_half_open():
+    """El último segundo del mes entra; el primer instante del siguiente, no."""
+    events = [
+        _admin_event(1, "2026-03-31T23:59:59+00:00"),
+        _admin_event(2, "2026-04-01T00:00:00+00:00"),
+        _admin_event(3, "2026-04-30T23:59:59+00:00"),
+        _admin_event(4, "2026-05-01T00:00:00+00:00"),
+    ]
+    assert [e["id"] for e in _run_admin_month(events)["data"]] == [2, 3]
+
+
+@pytest.mark.parametrize("year,month,inside,outside", [
+    (2024, 2, "2024-02-29T23:00:00+00:00", "2024-03-01T00:00:00+00:00"),  # bisiesto
+    (2026, 2, "2026-02-28T23:00:00+00:00", "2026-03-01T00:00:00+00:00"),
+    (2026, 1, "2026-01-31T23:00:00+00:00", "2026-02-01T00:00:00+00:00"),
+    (2026, 12, "2026-12-31T23:00:00+00:00", "2027-01-01T00:00:00+00:00"),  # cruce de año
+])
+def test_admin_month_window_respects_real_month_lengths(year, month, inside, outside):
+    """La ventana se calcula por mes real, no con una longitud fija."""
+    events = [_admin_event(1, inside), _admin_event(2, outside)]
+    result = _run_admin_month(events, year=year, month=month)
+    assert [e["id"] for e in result["data"]] == [1]
+    assert result["year"] == year and result["month"] == month
+
+
+def test_admin_month_excludes_canceled_and_deleted():
+    """El filtro de vigencia compartido sigue descartando cancelados y eliminados."""
+    events = [
+        _admin_event(1, "2026-04-10T09:00:00+00:00"),
+        _admin_event(2, "2026-04-11T09:00:00+00:00", is_canceled=True),
+        _admin_event(3, "2026-04-12T09:00:00+00:00", is_deleted=True),
+    ]
+    assert [e["id"] for e in _run_admin_month(events)["data"]] == [1]
+
+
+def test_admin_month_is_ordered_chronologically():
+    """El mes sale ascendente por init_time."""
+    events = [
+        _admin_event(1, "2026-04-20T09:00:00+00:00"),
+        _admin_event(2, "2026-04-05T09:00:00+00:00"),
+        _admin_event(3, "2026-04-12T09:00:00+00:00"),
+    ]
+    result = _run_admin_month(events)
+    assert [e["id"] for e in result["data"]] == [2, 3, 1]
+    assert result["total"] == 3
