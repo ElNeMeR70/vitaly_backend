@@ -341,7 +341,8 @@ def search_students(
         HTTPException(401): Si el token es inválido, expiró o fue revocado.
         HTTPException(403): Si el rol no es admin_escuela, o si el usuario no está
             vinculado a ninguna escuela.
-        HTTPException(500): Si la consulta a la vista falla.
+        HTTPException(500): Si falta 'SUPABASE_SERVICE_KEY' —la vista está denegada a
+            la clave pública— o si la consulta a la vista falla.
     """
     user_id = int(admin_payload["sub"])
     students, total = student_search_service.search_for_school_admin(

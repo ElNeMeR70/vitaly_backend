@@ -26,7 +26,7 @@ import logging
 
 from fastapi import HTTPException
 
-from app.core.database import supabase
+from app.core.database import supabase_admin
 from app.schemas.enums import BmiStatus
 from app.services.doctor_event_service import doctor_event_service
 from app.services.school_admin_service import school_admin_service
@@ -34,6 +34,11 @@ from app.services.school_admin_service import school_admin_service
 logger = logging.getLogger(__name__)
 
 #: Vista creada por la migración ``20261107120000_create_student_health_status_view.sql``.
+#:
+#: Se lee con el cliente privilegiado: la vista cruza datos de salud de todas las
+#: escuelas, así que la migración se la deniega a ``anon`` —la clave que viaja al
+#: frontend— igual que ``settings``. El aislamiento no se delega a la clave, lo
+#: sigue aplicando el ``.in_("school_id", ...)`` resuelto en el servidor.
 _VIEW = "student_health_status"
 
 #: Columnas expuestas por la búsqueda. Se enumeran en lugar de usar ``*`` para no
@@ -145,15 +150,25 @@ class StudentSearchService:
 
         Raises:
             HTTPException: 400 si la jerarquía de filtros de salón es inválida.
-            HTTPException: 500 si la consulta falla.
+            HTTPException: 500 si falta ``SUPABASE_SERVICE_KEY`` o la consulta falla.
         """
         self._validate_classroom_filters(category, grade, section)
 
         if not school_ids:
             return [], 0
 
+        if supabase_admin is None:
+            logger.error(
+                "SUPABASE_SERVICE_KEY no está configurada: la vista "
+                "'student_health_status' solo es legible por el cliente privilegiado."
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="La búsqueda de estudiantes no está disponible en este momento.",
+            )
+
         query = (
-            supabase.table(_VIEW)
+            supabase_admin.table(_VIEW)
             .select(_COLUMNS, count="exact")
             .in_("school_id", school_ids)
         )

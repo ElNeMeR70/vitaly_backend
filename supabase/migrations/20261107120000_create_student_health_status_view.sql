@@ -16,8 +16,20 @@
 --     get_students_resume (:305). Sin él, un buscador global devolvería egresados.
 --   * La altura se almacena en centímetros: _calculate_bmi (:90-99) divide entre 100.
 --   * No se filtra por is_active; se expone como columna, igual que el listado por salón.
+--
+-- Acceso: la vista cruza datos de salud de TODAS las escuelas en un solo objeto, así que queda
+-- fuera del alcance de la `anon key` —la que usa el backend y la que viaja al frontend— siguiendo
+-- el mismo patrón que `settings`. Sin esto, cualquiera con la clave pública podría leer la vista
+-- entera por la Data API saltándose los gates de `app/api/deps.py` y el filtro por `school_id`.
+-- La lee el cliente privilegiado `supabase_admin` desde `app/services/student_search_service.py`;
+-- el aislamiento real lo sigue aplicando el `.in_("school_id", ...)` resuelto en el servidor, tal
+-- como describe la skill `supabase-integration`.
+--
+-- `security_invoker = on` es defensa en profundidad: sin él la vista se ejecutaría con los
+-- privilegios de su dueño e ignoraría cualquier RLS que se añada después a las tablas base.
 
-CREATE OR REPLACE VIEW public.student_health_status AS
+CREATE OR REPLACE VIEW public.student_health_status
+    WITH (security_invoker = on) AS
 SELECT DISTINCT ON (s.id)
     s.id                                      AS student_id,
     c.school_id                               AS school_id,
@@ -82,6 +94,10 @@ COMMENT ON VIEW public.student_health_status IS
     'Estudiantes del año académico vigente con su estado nutricional por IMC y si tienen un '
     'caso médico abierto. Una fila por estudiante. Replica la clasificación de '
     'SchoolAdminService.get_students_by_classroom; ambas deben moverse juntas.';
+
+-- Deniega la vista a la Data API pública y la reserva al cliente privilegiado del backend.
+REVOKE ALL ON public.student_health_status FROM anon, authenticated;
+GRANT SELECT ON public.student_health_status TO service_role;
 
 -- Índices de apoyo. Aditivos e idempotentes: no alteran datos ni esquema lógico.
 CREATE INDEX IF NOT EXISTS idx_classroom_school_id
