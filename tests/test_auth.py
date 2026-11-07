@@ -8,6 +8,7 @@ Tests for Auth endpoints and service layer:
   - POST /api/v1/auth/login        (alias obsoleto del portal de clientes)
   - POST /api/v1/auth/admin/login  (portal de administración, scope=admin)
   - POST /api/v1/auth/logout
+  - POST /api/v1/auth/change-password (cualquier sesión válida, ambos portales)
   - Gates de procedencia get_current_admin / get_current_client (claim `scope`)
 
 Adheres strictly to the 5 laws of vitaly-feature-testing:
@@ -33,10 +34,11 @@ from postgrest.exceptions import APIError
 
 from app.api.deps import get_current_admin, get_current_client
 from app.core.config import get_settings
-from app.core.security import ALGORITHM, create_access_token, get_password_hash
+from app.core.security import ALGORITHM, create_access_token, get_password_hash, verify_password
 from app.main import app
-from app.schemas.user import SystemAdminRegister
+from app.schemas.user import PasswordChangeCreate, SystemAdminRegister
 from app.services.auth_service import auth_service
+from tests.fake_supabase import FakeSupabase
 
 SERVICE_MODULE = "app.services.auth_service"
 AUTH_BASE_URL = "/api/v1/auth"
@@ -1114,3 +1116,273 @@ class TestAuthServiceEdgeCases:
         with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
             route_tables(mock_sb, token_blacklist=empty_query)
             assert auth_service.is_token_revoked("another-token") is False
+
+
+# ──────────────────────────────────────────────────────────
+# 8. POST /change-password
+# ──────────────────────────────────────────────────────────
+
+NEW_PASSWORD = "BrandNewPassword456!"
+CHANGE_PASSWORD_URL = f"{AUTH_BASE_URL}/change-password"
+
+
+def password_db(**overrides) -> FakeSupabase:
+    """Base en memoria con el usuario 110 (autenticado) y el 111 (ajeno)."""
+    me = {**active_user(110), **overrides}
+    other = {**active_user(111), "email": "otra@vitaly.com"}
+    return FakeSupabase(
+        user=[me, other],
+        user_roles=[{"user_id": 110, "role": "representante"}, {"user_id": 111, "role": "doctor"}],
+        token_blacklist=[],
+    )
+
+
+def bearer(user_id: int = 110, role: str = "representante", scope: str = "client") -> dict:
+    token = create_access_token(data={"sub": str(user_id), "role": role, "scope": scope})
+    return {"Authorization": f"Bearer {token}"}
+
+
+def stored_hash(db: FakeSupabase, user_id: int) -> str:
+    return next(row["password"] for row in db.db["user"] if row["id"] == user_id)
+
+
+class TestChangePassword:
+    @pytest.mark.parametrize(
+        ("role", "scope"),
+        [
+            ("admin_sistema", "admin"),
+            ("admin_escuela", "client"),
+            ("doctor", "client"),
+            ("representante", "client"),
+        ],
+    )
+    def test_success_for_every_role_and_portal(self, client, role, scope):
+        """Contraseña actual correcta -> 200 y solo cambia el hash del usuario del token."""
+        db = password_db()
+        other_hash = stored_hash(db, 111)
+        with patch(f"{SERVICE_MODULE}.supabase", db):
+            response = client.post(
+                CHANGE_PASSWORD_URL,
+                headers=bearer(role=role, scope=scope),
+                json={"current_password": TEST_PASSWORD, "new_password": NEW_PASSWORD},
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["data"] == "Contraseña actualizada"
+        assert body["message"] == "Contraseña actualizada correctamente"
+        assert verify_password(NEW_PASSWORD, stored_hash(db, 110))
+        assert not verify_password(TEST_PASSWORD, stored_hash(db, 110))
+        assert stored_hash(db, 111) == other_hash
+
+    def test_new_password_works_on_login_and_old_one_does_not(self, client):
+        """Tras el cambio, el login acepta la nueva contraseña y rechaza la anterior."""
+        db = password_db()
+        with patch(f"{SERVICE_MODULE}.supabase", db):
+            change = client.post(
+                CHANGE_PASSWORD_URL,
+                headers=bearer(),
+                json={"current_password": TEST_PASSWORD, "new_password": NEW_PASSWORD},
+            )
+            new_login = client.post(
+                f"{AUTH_BASE_URL}/client/login",
+                json={"email": "cuenta@vitaly.com", "password": NEW_PASSWORD},
+            )
+            old_login = client.post(
+                f"{AUTH_BASE_URL}/client/login",
+                json={"email": "cuenta@vitaly.com", "password": TEST_PASSWORD},
+            )
+
+        assert change.status_code == 200
+        assert new_login.status_code == 200
+        assert old_login.status_code == 401
+
+    def test_current_session_stays_valid(self, client):
+        """La sesión se mantiene: el mismo token sigue autenticando tras el cambio."""
+        db = password_db()
+        headers = bearer()
+        with patch(f"{SERVICE_MODULE}.supabase", db):
+            first = client.post(
+                CHANGE_PASSWORD_URL,
+                headers=headers,
+                json={"current_password": TEST_PASSWORD, "new_password": NEW_PASSWORD},
+            )
+            second = client.post(
+                CHANGE_PASSWORD_URL,
+                headers=headers,
+                json={"current_password": NEW_PASSWORD, "new_password": "ThirdPassword789!"},
+            )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert db.db["token_blacklist"] == []
+
+    def test_wrong_current_password_returns_400_not_401(self, client):
+        """Contraseña actual incorrecta -> 400 (el cliente cierra sesión ante un 401) sin tocar el hash."""
+        db = password_db()
+        original_hash = stored_hash(db, 110)
+        with patch(f"{SERVICE_MODULE}.supabase", db):
+            response = client.post(
+                CHANGE_PASSWORD_URL,
+                headers=bearer(),
+                json={"current_password": "WrongPassword!", "new_password": NEW_PASSWORD},
+            )
+
+        assert response.status_code == 400
+        body = response.json()
+        assert body["success"] is False
+        assert body["data"] is None
+        assert body["message"] == "La contraseña actual es incorrecta."
+        assert stored_hash(db, 110) == original_hash
+
+    def test_new_password_equal_to_current_returns_400(self, client):
+        """La nueva contraseña no puede repetir la actual."""
+        db = password_db()
+        original_hash = stored_hash(db, 110)
+        with patch(f"{SERVICE_MODULE}.supabase", db):
+            response = client.post(
+                CHANGE_PASSWORD_URL,
+                headers=bearer(),
+                json={"current_password": TEST_PASSWORD, "new_password": TEST_PASSWORD},
+            )
+
+        assert response.status_code == 400
+        assert response.json()["message"] == "La nueva contraseña debe ser distinta de la actual."
+        assert stored_hash(db, 110) == original_hash
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"current_password": TEST_PASSWORD, "new_password": "short"},
+            {"current_password": "", "new_password": NEW_PASSWORD},
+            {"current_password": TEST_PASSWORD},
+            # 40 caracteres pero 80 bytes en UTF-8: bcrypt no los admite.
+            {"current_password": TEST_PASSWORD, "new_password": "ñ" * 40},
+            {"current_password": "a" * 73, "new_password": NEW_PASSWORD},
+        ],
+    )
+    def test_invalid_payload_returns_422_without_touching_db(self, client, payload):
+        """Longitudes fuera de rango o campos ausentes -> 422 antes de llegar al servicio."""
+        db = password_db()
+        original_hash = stored_hash(db, 110)
+        with patch(f"{SERVICE_MODULE}.supabase", db):
+            response = client.post(CHANGE_PASSWORD_URL, headers=bearer(), json=payload)
+
+        assert response.status_code == 422
+        assert response.json()["success"] is False
+        assert stored_hash(db, 110) == original_hash
+
+    def test_body_user_id_is_ignored(self, client):
+        """El usuario sale del claim sub: un id en el cuerpo no redirige el cambio a otra cuenta."""
+        db = password_db()
+        other_hash = stored_hash(db, 111)
+        with patch(f"{SERVICE_MODULE}.supabase", db):
+            response = client.post(
+                CHANGE_PASSWORD_URL,
+                headers=bearer(),
+                json={"user_id": 111, "current_password": TEST_PASSWORD, "new_password": NEW_PASSWORD},
+            )
+
+        assert response.status_code == 200
+        assert stored_hash(db, 111) == other_hash
+        assert verify_password(NEW_PASSWORD, stored_hash(db, 110))
+
+    def test_missing_token_returns_401(self, client):
+        response = client.post(
+            CHANGE_PASSWORD_URL,
+            json={"current_password": TEST_PASSWORD, "new_password": NEW_PASSWORD},
+        )
+        assert response.status_code == 401
+        assert response.json()["success"] is False
+
+    def test_malformed_token_returns_401(self, client):
+        response = client.post(
+            CHANGE_PASSWORD_URL,
+            headers={"Authorization": "Bearer not-a-valid-jwt-token"},
+            json={"current_password": TEST_PASSWORD, "new_password": NEW_PASSWORD},
+        )
+        assert response.status_code == 401
+        assert response.json()["success"] is False
+
+    def test_revoked_token_returns_401_without_touching_db(self, client):
+        """Un token revocado por logout no puede cambiar la contraseña."""
+        headers = bearer()
+        db = password_db()
+        db.db["token_blacklist"] = [{"id": 1, "token": headers["Authorization"].removeprefix("Bearer ")}]
+        original_hash = stored_hash(db, 110)
+        with patch(f"{SERVICE_MODULE}.supabase", db):
+            response = client.post(
+                CHANGE_PASSWORD_URL,
+                headers=headers,
+                json={"current_password": TEST_PASSWORD, "new_password": NEW_PASSWORD},
+            )
+
+        assert response.status_code == 401
+        assert "El token ha sido revocado" in response.json()["message"]
+        assert stored_hash(db, 110) == original_hash
+
+    def test_inactive_account_returns_403(self, client):
+        """Una cuenta desactivada después del login no puede cambiar la contraseña."""
+        db = password_db(is_active=False)
+        original_hash = stored_hash(db, 110)
+        with patch(f"{SERVICE_MODULE}.supabase", db):
+            response = client.post(
+                CHANGE_PASSWORD_URL,
+                headers=bearer(),
+                json={"current_password": TEST_PASSWORD, "new_password": NEW_PASSWORD},
+            )
+
+        assert response.status_code == 403
+        assert response.json()["success"] is False
+        assert stored_hash(db, 110) == original_hash
+
+    def test_deleted_account_session_returns_401(self, client):
+        """Una cuenta eliminada ya no puede usar su sesión para cambiar contraseña."""
+        db = password_db(is_deleted=True)
+        original_hash = stored_hash(db, 110)
+        with patch(f"{SERVICE_MODULE}.supabase", db):
+            response = client.post(
+                CHANGE_PASSWORD_URL,
+                headers=bearer(),
+                json={"current_password": TEST_PASSWORD, "new_password": NEW_PASSWORD},
+            )
+
+        assert response.status_code == 401
+        assert response.json()["message"] == "La cuenta no está disponible. Por favor inicia sesión de nuevo."
+        assert stored_hash(db, 110) == original_hash
+
+    def test_database_error_returns_500_envelope(self, client, caplog):
+        """Un fallo de Supabase se registra y responde el envelope 500 sin detalles internos."""
+        db = password_db()
+        db.failing_table = "user"
+        with patch(f"{SERVICE_MODULE}.supabase", db), \
+             patch.object(auth_service, "assert_account_available"):
+            response = client.post(
+                CHANGE_PASSWORD_URL,
+                headers=bearer(),
+                json={"current_password": TEST_PASSWORD, "new_password": NEW_PASSWORD},
+            )
+
+        assert response.status_code == 500
+        body = response.json()
+        assert body["success"] is False
+        assert body["message"] == "No se pudo cambiar la contraseña. Inténtalo de nuevo más tarde."
+        assert "postgrest unavailable" not in response.text
+        assert "Error inesperado al cambiar la contraseña" in caplog.text
+
+    def test_row_deleted_between_read_and_update_returns_404(self):
+        """Si la actualización no afecta a ninguna fila, el servicio responde 404."""
+        user_table = MagicMock()
+        user_table.select.return_value = make_query([{"id": 110, "password": HASHED_PASSWORD, "is_active": True}])
+        user_table.update.return_value = make_query([])
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(mock_sb, user=user_table)
+            with pytest.raises(HTTPException) as exc_info:
+                auth_service.change_password(
+                    user_id=110,
+                    data=PasswordChangeCreate(current_password=TEST_PASSWORD, new_password=NEW_PASSWORD),
+                )
+
+        assert exc_info.value.status_code == 404
