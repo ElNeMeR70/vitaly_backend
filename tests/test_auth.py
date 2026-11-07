@@ -980,7 +980,8 @@ class TestScopeGates:
     def test_admin_route_rejects_legacy_token_without_scope_with_401(self, client):
         """Ruta de admin_sistema con un token real sin `scope` -> 401 con envelope."""
         token = create_access_token(data={"sub": "1", "role": "admin_sistema"})
-        with patch.object(auth_service, "is_token_revoked", return_value=False):
+        with patch.object(auth_service, "is_token_revoked", return_value=False), \
+             patch.object(auth_service, "assert_account_available"):
             response = client.get(
                 "/api/v1/admin/users",
                 headers={"Authorization": f"Bearer {token}"},
@@ -993,7 +994,8 @@ class TestScopeGates:
     def test_client_route_rejects_admin_scope_token_with_403(self, client):
         """Ruta de representante con un token del portal de administración -> 403 con envelope."""
         token = create_access_token(data={"sub": "1", "role": "admin_sistema", "scope": "admin"})
-        with patch.object(auth_service, "is_token_revoked", return_value=False):
+        with patch.object(auth_service, "is_token_revoked", return_value=False), \
+             patch.object(auth_service, "assert_account_available"):
             response = client.post(
                 "/api/v1/parent/link-students",
                 headers={"Authorization": f"Bearer {token}"},
@@ -1025,7 +1027,8 @@ class TestLogoutAndRevocation:
 
         # First logout call: token is not revoked yet
         with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
-            route_tables(mock_sb, token_blacklist=blacklist_empty)
+            route_tables(mock_sb, token_blacklist=blacklist_empty,
+                         user=make_query([{"id": 200, "is_deleted": False}]))
             blacklist_empty.insert = MagicMock(return_value=blacklist_insert)
 
             response = client.post(

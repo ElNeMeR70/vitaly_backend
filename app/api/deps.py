@@ -19,11 +19,11 @@ security = HTTPBearer()
 
 ALGORITHM = "HS256"
 
-def get_current_user_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+def get_current_user_token(credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)]) -> dict:
     """Decodifica y valida el JWT del header ``Authorization: Bearer``.
 
     Es la base de todos los demás gates: verifica la firma HS256, la expiración y
-    que el token no haya sido revocado por un logout previo.
+    que el token no haya sido revocado y que la cuenta siga existiendo sin borrado lógico.
 
     Args:
         credentials: Credenciales extraídas por ``HTTPBearer``. FastAPI responde
@@ -34,10 +34,18 @@ def get_current_user_token(credentials: HTTPAuthorizationCredentials = Depends(s
         usuario como string) y ``role``. No incluye claim de escuela.
 
     Raises:
-        HTTPException: 401 si el token es inválido, expiró o fue revocado.
+        HTTPException: 401 si el token es inválido, expiró, fue revocado o su
+            cuenta fue eliminada; 500 si no puede comprobarse la cuenta.
     """
     try:
         payload = jwt.decode(credentials.credentials, settings.SECRET_KEY, algorithms=[ALGORITHM])
+        subject = payload.get("sub")
+        expires_at = payload.get("exp")
+        if (
+            not isinstance(subject, str) or not subject.isascii() or not subject.isdecimal()
+            or int(subject) <= 0 or type(expires_at) is not int
+        ):
+            raise JWTError("Claims de sesión inválidos")
         
         # Verificar si el token ha sido revocado (logout)
         if auth_service.is_token_revoked(credentials.credentials):
@@ -47,8 +55,9 @@ def get_current_user_token(credentials: HTTPAuthorizationCredentials = Depends(s
                 headers={"WWW-Authenticate": "Bearer"},
             )
             
+        auth_service.assert_account_available(int(subject))
         return payload
-    except JWTError:
+    except (JWTError, TypeError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Credenciales inválidas o token expirado",

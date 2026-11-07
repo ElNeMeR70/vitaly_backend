@@ -1,19 +1,58 @@
 """Autenticación: registro por rol, login y revocación de sesión."""
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends
 from fastapi.security import HTTPAuthorizationCredentials
 
-from app.api.deps import get_current_user_token, security
+from app.api.deps import get_current_client, get_current_user_token, security
 from app.core.openapi_responses import BAD_REQUEST, PROTECTED_RESPONSES, PUBLIC_RESPONSES, error_response
 from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorRegister, ParentRegister, ClientLoginCreate, AdminLoginCreate, Token
 from app.schemas.enums import TokenScope
 from app.schemas.responses import APIResponse
 from app.services.auth_service import auth_service
+from app.services.account_deletion_service import account_deletion_service
 
 router = APIRouter()
 # Portales de login: montados en /auth/client y /auth/admin, cada uno con su sección en Swagger/ReDoc.
 client_router = APIRouter()
 admin_router = APIRouter()
+
+
+@router.delete(
+    "/me",
+    response_model=APIResponse[None],
+    summary="Eliminar la cuenta propia",
+    description=(
+        "Borrado lógico de la cuenta y desactivación de sus vínculos. Conserva "
+        "el email y los datos históricos, registra deleted_at e invalida todas "
+        "las sesiones. No requiere cuerpo ni contraseña adicional."
+    ),
+    responses={
+        **PROTECTED_RESPONSES,
+        **error_response(409, "La cuenta conserva obligaciones pendientes.",
+                         "No puedes eliminar tu cuenta mientras tengas revisiones pendientes."),
+    },
+)
+def delete_own_account(
+    payload: Annotated[dict, Depends(get_current_client)],
+    credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)],
+) -> APIResponse[None]:
+    """Elimina únicamente la cuenta autenticada.
+
+    Multi-tenancy:
+        Usuario y vínculos se resuelven desde sub; no acepta school_id ni IDs.
+    RBAC:
+        admin_escuela, doctor y representante del portal de clientes.
+    Raises:
+        HTTPException: 401 por token inválido o cuenta eliminada; 403 por portal
+            o rol incompatible; 409 por obligaciones pendientes; 500 si falla
+            la transacción, que revierte todas sus escrituras.
+    """
+    account_deletion_service.delete_own_account(
+        int(payload["sub"]), credentials.credentials, int(payload["exp"]),
+    )
+    return APIResponse(data=None, message="Cuenta eliminada correctamente")
 
 # Errores comunes de ambos portales, con ejemplos del envelope estándar.
 LOGIN_ERROR_RESPONSES = {
