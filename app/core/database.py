@@ -35,11 +35,21 @@ def get_supabase_admin_client() -> Optional[Client]:
 #: permitida: no se crean clientes ad-hoc ni se llama a la API REST directamente.
 supabase = get_supabase_client()
 
-#: Cliente privilegiado, reservado a las tablas que deben quedar **fuera** del
-#: alcance de la ``anon key``. Hoy su único consumidor es
-#: :mod:`app.services.settings_service`: la tabla ``settings`` conserva RLS
-#: activo y sin políticas, de modo que la Data API anónima no puede leerla ni
-#: modificarla, y el único camino de escritura es el endpoint protegido por
-#: ``get_current_admin_sistema``. No lo uses para datos con alcance de escuela:
-#: ignora RLS y anularía cualquier defensa en profundidad.
+#: Cliente privilegiado, reservado a los objetos que deben quedar **fuera** del
+#: alcance de la ``anon key`` (``SUPABASE_KEY`` lleva ``role=anon`` y viaja al
+#: frontend). Sus consumidores:
+#:
+#: - :mod:`app.services.settings_service` — ``settings`` conserva RLS activo y sin
+#:   políticas, así que la Data API anónima no puede leerla ni modificarla y el único
+#:   camino de escritura es el endpoint protegido por ``get_current_admin_sistema``.
+#: - :mod:`app.services.audit_service` — la bitácora ``audit_log`` es append-only y
+#:   sensible; solo ``service_role`` escribe en ella.
+#: - :mod:`app.services.student_search_service` — la vista ``student_health_status``
+#:   cruza datos de salud de **todas** las escuelas en un solo objeto, de modo que la
+#:   migración se la deniega a ``anon``. Es la excepción consciente a la regla de
+#:   abajo: el aislamiento no se delega a la clave, lo aplica el ``school_id``
+#:   resuelto en el servidor, tal como describe la skill ``supabase-integration``.
+#:
+#: Fuera de esos casos, no lo uses para datos con alcance de escuela: ignora RLS y
+#: anularía cualquier defensa en profundidad que se añada más adelante.
 supabase_admin = get_supabase_admin_client()
