@@ -33,7 +33,7 @@ class AdminService:
         query = supabase.table("user").select("id, email, name, lastname, birthday, is_active, is_deleted", count="exact")
         
         if pending_only:
-            query = query.eq("is_active", False)
+            query = query.eq("is_active", False).eq("is_deleted", False)
             
         # Pagination calculations
         start = (page - 1) * size
@@ -244,6 +244,8 @@ class AdminService:
             raise HTTPException(status_code=404, detail="Usuario a alterar no encontrado.")
             
         target_user = user_response.data[0]
+        if target_user.get("is_deleted"):
+            raise HTTPException(status_code=400, detail=f"No se puede alterar el estado del usuario {user_id} porque está eliminado.")
         
         # Check if the target is another system_admin
         target_role_res = supabase.table("user_roles").select("role").eq("user_id", user_id).execute()

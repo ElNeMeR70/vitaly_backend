@@ -160,6 +160,8 @@ class TestGetUsers:
         assert "Usuarios pendientes obtenidos exitosamente" in body["message"]
         assert len(body["data"]["data"]) == 1
         assert body["data"]["data"][0]["is_active"] is False
+        user_query.eq.assert_any_call("is_active", False)
+        user_query.eq.assert_any_call("is_deleted", False)
 
 
 # ──────────────────────────────────────────────────────────
@@ -347,6 +349,21 @@ class TestToggleUserActive:
         body = response.json()
         assert body["success"] is False
         assert "No puedes deshabilitarte a ti mismo" in body["message"]
+
+    def test_toggle_user_active_deleted_user_returns_400(self, sys_admin_client):
+        """Intentar alternar el estado de una cuenta eliminada (is_deleted=True) -> 400 sin modificar is_active (GH-72)."""
+        user_query = make_query([{"is_active": False, "is_deleted": True}])
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(mock_sb, user=user_query)
+            payload = {"user_id_to_toggle": 15, "admin_id": 1}
+            response = sys_admin_client.patch(f"{ADMIN_USERS_BASE_URL}/users/15/toggle-active", json=payload)
+
+        assert response.status_code == 400
+        body = response.json()
+        assert body["success"] is False
+        assert "eliminado" in body["message"]
+        user_query.update.assert_not_called()
 
     def test_toggle_user_active_target_not_found_returns_404(self, sys_admin_client):
         """Usuario destino no encontrado -> 404 Not Found."""
