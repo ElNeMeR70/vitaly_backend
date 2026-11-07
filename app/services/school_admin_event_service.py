@@ -379,6 +379,32 @@ class SchoolAdminEventService:
     # GET - Detalle de un Evento
     # ──────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _classroom_label(classroom: dict, category_name: str | None) -> str:
+        """Construye una etiqueta sin exponer identificadores de categoría.
+
+        Args:
+            classroom: Fila con nivel y sección del salón.
+            category_name: Nombre resuelto del catálogo, o None si falta.
+
+        Returns:
+            str: Grado, nivel o año, categoría y sección cuando esté presente.
+        """
+        category = (category_name or "").strip().lower()
+        unit = {"primaria": "grado", "preescolar": "nivel", "bachillerato": "año"}.get(category, "nivel")
+        ordinals = {1: "Primer", 2: "Segundo", 3: "Tercer", 4: "Cuarto", 5: "Quinto", 6: "Sexto"}
+        level = classroom.get("level")
+        if level in ordinals:
+            label = f"{ordinals[level]} {unit} {category}".strip()
+        elif level is not None:
+            label = f"{unit.capitalize()} {level} {category}".strip()
+        else:
+            label = category.capitalize()
+        if not category:
+            label = " · ".join(filter(None, [label, "Categoría no disponible"]))
+        section = str(classroom.get("section") or "").strip()
+        return f"{label} · Sección {section}" if section else label
+
     def get_event_detail(self, user_id: int, event_id: int) -> dict:
         """Devuelve un evento con el detalle de sus salones y médicos convocados.
 
@@ -393,6 +419,7 @@ class SchoolAdminEventService:
             HTTPException: 403 si el usuario no está vinculado a ninguna escuela, o
                 si el evento pertenece a otra escuela.
             HTTPException: 404 si no existe un evento activo con ese ID.
+            HTTPException: 500 si falla la consulta de salones o categorías.
         """
         admin = self._get_admin_record(user_id)
         sch_admin_id = admin["sch_admin_id"]
@@ -415,16 +442,31 @@ class SchoolAdminEventService:
         # Obtener info de salones
         classrooms_info = []
         if classroom_ids:
-            cr_res = (
-                supabase.table("classroom")
-                .select("id, category, level, section")
-                .in_("id", classroom_ids)
-                .execute()
-            )
+            try:
+                cr_res = (
+                    supabase.table("classroom")
+                    .select("id, category, level, section")
+                    .eq("school_id", admin["school_id"])
+                    .in_("id", classroom_ids)
+                    .execute()
+                )
+                category_ids = sorted({c["category"] for c in cr_res.data if c.get("category") is not None})
+                categories = {}
+                if category_ids:
+                    # Catálogo global: una consulta por lote, sin filtro de escuela.
+                    category_res = (
+                        supabase.table("classroom_category")
+                        .select("id, classroom_type_name")
+                        .in_("id", category_ids)
+                        .execute()
+                    )
+                    categories = {c["id"]: c.get("classroom_type_name") for c in category_res.data}
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail="No se pudieron obtener los salones del evento.") from exc
             classrooms_info = [
                 {
                     "id": c["id"],
-                    "label": f"{c.get('category', '')} {c.get('level', '')} {c.get('section', '')}".strip()
+                    "label": self._classroom_label(c, categories.get(c.get("category"))),
                 }
                 for c in cr_res.data
             ] if cr_res.data else []
