@@ -81,9 +81,15 @@ def search_students(
         Requiere rol doctor autenticado mediante Bearer token.
 
     Auditoría:
-        Registra la consulta como acceso de lectura a datos de salud, con el médico,
-        las escuelas consultadas, los filtros aplicados y el número de resultados.
-        No se registran datos identificables de los estudiantes devueltos.
+        Registra la consulta como acceso de lectura a datos de salud: una entrada por
+        escuela consultada, con el médico, los filtros aplicados y el número de
+        resultados. No se registran datos identificables de los estudiantes devueltos
+        ni el término buscado.
+
+    Raises adicionales:
+        HTTPException(500): Si falta 'SUPABASE_SERVICE_KEY'. La vista
+            'student_health_status' está denegada a la clave pública, de modo que solo
+            el cliente privilegiado puede leerla.
 
     Raises:
         HTTPException(400): Si se envía 'grade' sin 'category', o 'section' sin
@@ -108,29 +114,39 @@ def search_students(
     )
 
     # Acceso de lectura a datos de salud: se audita la consulta, no su contenido.
+    # Una fila por escuela consultada, no una sola con el 'school_id' que mandó el
+    # cliente: ese parámetro es opcional y viene vacío en el caso normal, y un NULL
+    # en esa columna significa "acción global de admin_sistema" (ver el COMMENT de la
+    # migración). Además deja utilizable idx_audit_log_school_created, que es el que
+    # responde a "qué se consultó en la escuela X". La tabla es append-only: una fila
+    # mal escrita no se corrige después.
     # `critical=False`: una bitácora caída no debe tumbar la búsqueda, pero el fallo
     # queda registrado en el log del servidor (ver app/services/audit_service.py).
-    audit_service.record(
-        actor=doctor_payload,
-        action="read",
-        entity="student_health_status",
-        school_id=school_id,
-        metadata={
-            "searched_school_ids": searched_school_ids,
-            "filters": {
-                "q": bool(q),
-                "bmi_status": bmi_status.value if bmi_status else None,
-                "has_active_medical_case": has_active_medical_case,
-                "category": category,
-                "grade": grade,
-                "section": section,
-            },
-            "page": page,
-            "size": size,
-            "result_count": len(students),
-            "total_matches": total,
+    audit_metadata = {
+        "searched_school_ids": searched_school_ids,
+        "filters": {
+            "q": bool(q),
+            "bmi_status": bmi_status.value if bmi_status else None,
+            "has_active_medical_case": has_active_medical_case,
+            "category": category,
+            "grade": grade,
+            "section": section,
         },
-    )
+        "page": page,
+        "size": size,
+        # Totales de la consulta completa, no de esta escuela: la búsqueda es una sola
+        # y 'searched_school_ids' permite correlacionar las filas entre sí.
+        "result_count": len(students),
+        "total_matches": total,
+    }
+    for searched_school_id in searched_school_ids:
+        audit_service.record(
+            actor=doctor_payload,
+            action="read",
+            entity="student_health_status",
+            school_id=searched_school_id,
+            metadata=audit_metadata,
+        )
 
     return APIResponse(
         data=students,
