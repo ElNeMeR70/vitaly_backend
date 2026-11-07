@@ -1,6 +1,8 @@
 """Administración global de usuarios por parte del administrador de sistema."""
 
-from fastapi import APIRouter, Depends, Query
+from typing import Optional
+
+from fastapi import APIRouter, Body, Depends, Query
 
 from app.api.deps import get_current_admin_sistema
 from app.core.openapi_responses import (
@@ -107,7 +109,7 @@ def approve_user(
         HTTPException(404): Si el usuario a aprobar no existe.
         HTTPException(400): Si el usuario está eliminado o ya estaba aprobado.
     """
-    msg = admin_service.approve_user(user_id=body.user_id_to_approve, admin_id=body.admin_id)
+    msg = admin_service.approve_user(user_id=body.user_id_to_approve, admin_id=int(admin_payload["sub"]))
     return APIResponse(data=msg, message="Aprobación completada")
 
 
@@ -138,7 +140,7 @@ def approve_users_bulk(
         HTTPException(401): Si el token es inválido, expiró o fue revocado.
         HTTPException(403): Si el rol no es admin_sistema.
     """
-    msg = admin_service.approve_users_bulk(user_ids=body.user_ids_to_approve, admin_id=body.admin_id)
+    msg = admin_service.approve_users_bulk(user_ids=body.user_ids_to_approve, admin_id=int(admin_payload["sub"]))
     return APIResponse(data=msg, message="Aprobación masiva completada")
 
 
@@ -187,7 +189,7 @@ def get_user_details(
 )
 def toggle_user_active(
     user_id: int,
-    body: ToggleUserRequest,
+    body: Optional[ToggleUserRequest] = Body(default=None),
     admin_payload: dict = Depends(get_current_admin_sistema)
 ):
     """Alterna el estado activo/inactivo de un usuario.
@@ -205,5 +207,5 @@ def toggle_user_active(
         HTTPException(404): Si el usuario objetivo no existe.
         HTTPException(400): Si el administrador intenta deshabilitarse a sí mismo.
     """
-    msg = admin_service.toggle_user_status(user_id=user_id, request_admin_id=body.admin_id)
+    msg = admin_service.toggle_user_status(user_id=user_id, request_admin_id=int(admin_payload["sub"]))
     return APIResponse(data=msg, message="Estado activo de usuario alternado")

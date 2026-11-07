@@ -348,6 +348,49 @@ class TestToggleUserActive:
         assert body["success"] is False
         assert "No puedes deshabilitarte a ti mismo" in body["message"]
 
+    def test_toggle_user_active_ignores_spoofed_body_admin_id_for_self_disable(self, sys_admin_client):
+        """Un admin_sistema (sub=1) no puede deshabilitarse a sí mismo aunque envíe otro admin_id en el body (GH-69)."""
+        payload = {"user_id_to_toggle": 1, "admin_id": 999}
+        response = sys_admin_client.patch(f"{ADMIN_USERS_BASE_URL}/users/1/toggle-active", json=payload)
+
+        assert response.status_code == 400
+        body = response.json()
+        assert body["success"] is False
+        assert "No puedes deshabilitarte a ti mismo" in body["message"]
+
+    def test_toggle_user_active_ignores_spoofed_body_admin_id_for_privilege_check(self, sys_admin_client):
+        """Un admin_sistema de nivel inferior (sub=1, nivel 1) recibe 403 al intentar desactivar a uno de nivel 2 aunque envíe admin_id=99 (nivel 5) en el body (GH-69)."""
+        user_query = make_query([{"is_active": True, "is_deleted": False}])
+        role_query = make_query([{"role": "admin_sistema"}])
+
+        sys_admin_table = MagicMock()
+        def select_eq_side_effect(col, val):
+            q = MagicMock()
+            if val == 1:
+                q.execute.return_value = MagicMock(data=[{"level_privilege": 1}])
+            elif val == 2:
+                q.execute.return_value = MagicMock(data=[{"level_privilege": 2}])
+            else:
+                q.execute.return_value = MagicMock(data=[{"level_privilege": 5}])
+            return q
+
+        sys_admin_table.select.return_value.eq.side_effect = select_eq_side_effect
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(
+                mock_sb,
+                user=user_query,
+                user_roles=role_query,
+                system_administrator=sys_admin_table,
+            )
+            payload = {"user_id_to_toggle": 2, "admin_id": 99}
+            response = sys_admin_client.patch(f"{ADMIN_USERS_BASE_URL}/users/2/toggle-active", json=payload)
+
+        assert response.status_code == 403
+        body = response.json()
+        assert body["success"] is False
+        assert "nivel igual o superior" in body["message"]
+
     def test_toggle_user_active_target_not_found_returns_404(self, sys_admin_client):
         """Usuario destino no encontrado -> 404 Not Found."""
         user_query = make_query([])

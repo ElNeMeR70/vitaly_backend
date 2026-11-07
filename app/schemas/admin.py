@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Optional
 from datetime import date
 
 
@@ -34,7 +34,7 @@ class ApproveUserRequest(BaseModel):
     """Solicitud para aprobar la cuenta de un usuario pendiente."""
 
     user_id_to_approve: int = Field(description="ID del usuario cuya cuenta se desea aprobar.")
-    admin_id: int = Field(description="ID del administrador que registra la aprobación.")
+    admin_id: Optional[int] = Field(default=None, description="Obsoleto: se ignora; el servidor usa el claim sub del JWT.")
 
 
 class BulkApproveUserRequest(BaseModel):
@@ -43,14 +43,14 @@ class BulkApproveUserRequest(BaseModel):
     user_ids_to_approve: List[int] = Field(
         description="IDs de los usuarios cuyas cuentas se desean aprobar."
     )
-    admin_id: int = Field(description="ID del administrador que registra las aprobaciones.")
+    admin_id: Optional[int] = Field(default=None, description="Obsoleto: se ignora; el servidor usa el claim sub del JWT.")
 
 
 class ToggleUserRequest(BaseModel):
     """Solicitud para alternar el estado activo/inactivo de un usuario."""
 
-    user_id_to_toggle: int = Field(description="ID del usuario cuyo estado se desea alternar.")
-    admin_id: int = Field(description="ID del administrador que registra el cambio de estado.")
+    user_id_to_toggle: Optional[int] = Field(default=None, description="Obsoleto: el objetivo se toma del path {user_id}.")
+    admin_id: Optional[int] = Field(default=None, description="Obsoleto: se ignora; el servidor usa el claim sub del JWT.")
 
 
 class UserDetailsResponse(BaseModel):
