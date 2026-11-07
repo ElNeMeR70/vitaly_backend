@@ -15,6 +15,9 @@ Fidelidad con PostgREST/PostgreSQL, donde importa:
   defecto de PostgreSQL.
 - ``count="exact"`` se captura antes de aplicar ``range``/``limit``, porque el
   ``Content-Range`` de PostgREST cuenta el total, no la página.
+- ``update`` modifica solo las filas que superan los filtros encadenados después
+  y las devuelve, como ``Prefer: return=representation``. Una actualización sin
+  coincidencias devuelve ``data=[]``.
 
 Sigue siendo un doble: no valida nombres de columna (PostgREST devolvería 400 a
 una columna inexistente) ni implementa joins anidados.
@@ -49,7 +52,9 @@ class FakeQuery:
     """Consulta supabase-py mínima que filtra, proyecta y ordena de verdad."""
 
     def __init__(self, rows: list[dict], fail: bool = False):
-        self._rows = [dict(row) for row in rows]
+        # Copia de la lista, no de las filas: ``update`` escribe sobre la tabla.
+        self._rows = list(rows)
+        self._update: dict | None = None
         self._columns: list[str] | None = None
         self._count = False
         self._total = None
@@ -60,6 +65,11 @@ class FakeQuery:
         if columns != "*":
             self._columns = [c.strip() for c in columns.split(",")]
         self._count = count is not None
+        return self
+
+    # ── Escritura ─────────────────────────────────────────
+    def update(self, values: dict):
+        self._update = dict(values)
         return self
 
     # ── Filtros de igualdad ───────────────────────────────
@@ -132,10 +142,15 @@ class FakeQuery:
         # donde supabase-py levanta APIError y donde el servicio debe envolverlo.
         if self._fail:
             raise RuntimeError("postgrest unavailable")
+        if self._update is not None:
+            for row in self._rows:
+                row.update(self._update)
         rows = self._rows
         total = self._total if self._total is not None else len(rows)
         if self._columns is not None:
             rows = [{c: r.get(c) for c in self._columns} for r in rows]
+        else:
+            rows = [dict(r) for r in rows]
         return SimpleNamespace(data=rows, count=total if self._count else None)
 
 
