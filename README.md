@@ -72,12 +72,15 @@ El backend está construido con un enfoque en seguridad, escalabilidad y estanda
     JWT_SECRET=tu_secreto
     ```
 
-    `SUPABASE_SERVICE_KEY` es la clave `service_role` del proyecto. Solo la usa
-    la tabla `settings` (configuración global del sistema), que conserva RLS
+    `SUPABASE_SERVICE_KEY` es la clave `service_role` del proyecto. La usan la
+    RPC interna de baja propia y la tabla `settings`, que conserva RLS
     activo y sin políticas para que la `anon key` no pueda leerla ni modificarla
     por la Data API. **Nunca debe salir del servidor ni llegar al frontend.** Si
     falta, la API arranca igual: la configuración aplica sus valores por defecto
     y los endpoints `/api/v1/admin/settings` responden 500 indicando la causa.
+    `DELETE /api/v1/auth/me` también responde 500 sin modificar datos si falta
+    esta clave. Para habilitar la baja, aplicar antes la migración
+    `20261106120000_delete_own_account.sql` siguiendo su protocolo de aprobación.
 
 3.  **Ejecutar Servidor en Desarrollo:**
     ```bash

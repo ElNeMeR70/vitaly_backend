@@ -307,6 +307,35 @@ class AuthService:
                 detail="No se pudo iniciar sesión. Inténtalo de nuevo más tarde.",
             ) from exc
 
+    def assert_account_available(self, user_id: int) -> None:
+        """Rechaza sesiones cuyo usuario ya no existe o fue eliminado.
+
+        Args:
+            user_id: Identificador obtenido del claim ``sub`` validado.
+
+        Returns:
+            None: La cuenta existe y no está eliminada.
+
+        Raises:
+            HTTPException: 401 si la cuenta no existe o está eliminada;
+                500 si no se puede consultar su estado.
+        """
+        try:
+            response = (
+                supabase.table("user").select("id, is_deleted")
+                .eq("id", user_id).execute()
+            )
+        except Exception as exc:
+            # No registrar la excepción del proveedor: puede incluir credenciales.
+            logger.error("No se pudo consultar el estado de una cuenta autenticada")
+            raise HTTPException(500, "No se pudo verificar el estado de la cuenta.") from exc
+        if not response.data or response.data[0].get("is_deleted"):
+            raise HTTPException(
+                status_code=401,
+                detail="La cuenta no está disponible. Por favor inicia sesión de nuevo.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
     def change_password(self, user_id: int, data: PasswordChangeCreate) -> str:
         """Cambia la contraseña del usuario autenticado tras verificar la vigente.
 
@@ -408,8 +437,15 @@ class AuthService:
 
         Returns:
             bool: True si el token fue revocado por un logout previo.
+
+        Raises:
+            HTTPException: 500 si no se puede consultar la lista de revocados.
         """
-        response = supabase.table("token_blacklist").select("id").eq("token", token).execute()
+        try:
+            response = supabase.table("token_blacklist").select("id").eq("token", token).execute()
+        except Exception as exc:
+            logger.error("No se pudo consultar la revocación de una sesión")
+            raise HTTPException(500, "No se pudo verificar la sesión.") from exc
         return len(response.data) > 0
 
 #: Instancia compartida del servicio, importada por endpoints y dependencias.

@@ -71,19 +71,21 @@ class SchoolAdminEventService:
         return [c["id"] for c in res.data] if res.data else []
 
     def _get_school_doctor_ids(self, school_id: int) -> list[int]:
-        """Retorna los IDs de los médicos asignados a una escuela.
+        """Retorna los IDs de médicos disponibles para nuevas convocatorias.
 
         Args:
             school_id: ID de la escuela, ya resuelto en el servidor.
 
         Returns:
-            list[int]: IDs de los médicos en ``doctor_to_school``. Lista vacía si
-            la escuela no tiene médicos asignados.
+            list[int]: IDs de médicos de la escuela con cuenta activa y no
+            eliminada. Lista vacía si no hay ninguno disponible.
         """
         res = (
             supabase.table("doctor_to_school")
-            .select("doctor_id")
+            .select("doctor_id, doctor!inner(user!inner(id))")
             .eq("school_id", school_id)
+            .eq("doctor.user.is_deleted", False)
+            .eq("doctor.user.is_active", True)
             .execute()
         )
         return [d["doctor_id"] for d in res.data] if res.data else []
