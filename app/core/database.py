@@ -36,8 +36,10 @@ def get_supabase_admin_client() -> Optional[Client]:
 supabase = get_supabase_client()
 
 #: Cliente privilegiado, reservado a las tablas que deben quedar **fuera** del
-#: alcance de la ``anon key``. Hoy su único consumidor es
-#: :mod:`app.services.settings_service`: la tabla ``settings`` conserva RLS
+#: alcance de la ``anon key``. Consumidores: settings_service y la RPC interna
+#: de baja propia en account_deletion_service. La RPC opera sobre identidad
+#: global y comprueba sus vínculos dentro de la transacción; nunca acepta una
+#: identidad o escuela elegida por el cliente HTTP. La tabla settings conserva RLS
 #: activo y sin políticas, de modo que la Data API anónima no puede leerla ni
 #: modificarla, y el único camino de escritura es el endpoint protegido por
 #: ``get_current_admin_sistema``. No lo uses para datos con alcance de escuela:

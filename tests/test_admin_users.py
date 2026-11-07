@@ -402,7 +402,8 @@ class TestAdminUsersRBAC:
     def test_get_users_forbidden_for_admin_escuela(self, client):
         """Rol admin_escuela intentando acceder -> 403 Forbidden."""
         token = create_access_token(data=admin_school_payload())
-        with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False):
+        with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False), \
+             patch("app.services.auth_service.auth_service.assert_account_available"):
             response = client.get(
                 f"{ADMIN_USERS_BASE_URL}/users",
                 headers={"Authorization": f"Bearer {token}"},
@@ -415,7 +416,8 @@ class TestAdminUsersRBAC:
     def test_get_users_forbidden_for_doctor(self, client):
         """Rol doctor intentando acceder -> 403 Forbidden."""
         token = create_access_token(data=doctor_payload())
-        with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False):
+        with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False), \
+             patch("app.services.auth_service.auth_service.assert_account_available"):
             response = client.get(
                 f"{ADMIN_USERS_BASE_URL}/users",
                 headers={"Authorization": f"Bearer {token}"},
@@ -428,7 +430,8 @@ class TestAdminUsersRBAC:
     def test_get_users_forbidden_for_parent(self, client):
         """Rol representante intentando acceder -> 403 Forbidden."""
         token = create_access_token(data=parent_payload())
-        with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False):
+        with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False), \
+             patch("app.services.auth_service.auth_service.assert_account_available"):
             response = client.get(
                 f"{ADMIN_USERS_BASE_URL}/users",
                 headers={"Authorization": f"Bearer {token}"},

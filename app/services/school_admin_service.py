@@ -1134,7 +1134,7 @@ class SchoolAdminService:
     # ──────────────────────────────────────────────────────────
 
     def get_doctors(self, user_id: int, page: int, size: int) -> dict:
-        """Lista de forma paginada los médicos asignados a la escuela.
+        """Lista de forma paginada los médicos no eliminados de la escuela.
 
         Args:
             user_id: ID del administrador autenticado (claim ``sub`` del JWT).
@@ -1153,8 +1153,9 @@ class SchoolAdminService:
         # 1. Contar doctores asignados a esta escuela
         count_res = (
             supabase.table("doctor_to_school")
-            .select("id", count="exact")
+            .select("id, doctor!inner(user!inner(id))", count="exact")
             .eq("school_id", school_id)
+            .eq("doctor.user.is_deleted", False)
             .execute()
         )
         total = count_res.count or 0
@@ -1165,8 +1166,10 @@ class SchoolAdminService:
         offset = (page - 1) * size
         d2s_res = (
             supabase.table("doctor_to_school")
-            .select("doctor_id, status")
+            .select("doctor_id, status, doctor!inner(user!inner(id))")
             .eq("school_id", school_id)
+            .eq("doctor.user.is_deleted", False)
+            .order("id")
             .range(offset, offset + size - 1)
             .execute()
         )
@@ -1305,6 +1308,8 @@ class SchoolAdminService:
         
         doctor_data = doc_res.data[0]
         user_data = doctor_data.pop("user", {}) if doctor_data.get("user") else {}
+        if user_data.get("is_deleted"):
+            raise HTTPException(status_code=404, detail=f"No existe ningún médico con ID {doctor_id}.")
 
         # 3. Obtener el nombre del estatus en la escuela
         status_name = "Desconocido"

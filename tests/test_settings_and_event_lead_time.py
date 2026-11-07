@@ -619,7 +619,8 @@ class TestAdminSettingsRBAC:
     def test_admin_escuela_is_forbidden(self, client):
         """El administrador de escuela no administra configuración global -> 403."""
         token = create_access_token(data=admin_school_payload())
-        with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False):
+        with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False), \
+             patch("app.services.auth_service.auth_service.assert_account_available"):
             response = client.get(
                 f"{SETTINGS_URL}/", headers={"Authorization": f"Bearer {token}"}
             )

@@ -623,7 +623,8 @@ class TestAdminSchoolRBAC:
     def test_schools_forbidden_for_admin_escuela(self, client):
         """Rol admin_escuela intentando acceder a admin/schools -> 403 Forbidden."""
         token = create_access_token(data=admin_school_payload())
-        with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False):
+        with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False), \
+             patch("app.services.auth_service.auth_service.assert_account_available"):
             response = client.get(
                 f"{SCHOOLS_BASE_URL}/",
                 headers={"Authorization": f"Bearer {token}"},
@@ -636,7 +637,8 @@ class TestAdminSchoolRBAC:
     def test_schools_forbidden_for_doctor(self, client):
         """Rol doctor intentando acceder a admin/schools -> 403 Forbidden."""
         token = create_access_token(data=doctor_payload())
-        with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False):
+        with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False), \
+             patch("app.services.auth_service.auth_service.assert_account_available"):
             response = client.get(
                 f"{SCHOOLS_BASE_URL}/",
                 headers={"Authorization": f"Bearer {token}"},

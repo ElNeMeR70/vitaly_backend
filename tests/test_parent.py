@@ -256,7 +256,8 @@ class TestLinkStudentsRBAC:
     def test_link_students_forbidden_for_admin_escuela(self, client):
         """Rol admin_escuela intentando invocar link-students -> 403 Forbidden."""
         token = create_access_token(data=admin_school_payload())
-        with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False):
+        with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False), \
+             patch("app.services.auth_service.auth_service.assert_account_available"):
             response = client.post(
                 f"{PARENT_BASE_URL}/link-students",
                 headers={"Authorization": f"Bearer {token}"},
@@ -269,7 +270,8 @@ class TestLinkStudentsRBAC:
     def test_link_students_forbidden_for_doctor(self, client):
         """Rol doctor intentando invocar link-students -> 403 Forbidden."""
         token = create_access_token(data=doctor_payload())
-        with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False):
+        with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False), \
+             patch("app.services.auth_service.auth_service.assert_account_available"):
             response = client.post(
                 f"{PARENT_BASE_URL}/link-students",
                 headers={"Authorization": f"Bearer {token}"},
@@ -282,7 +284,8 @@ class TestLinkStudentsRBAC:
     def test_link_students_forbidden_for_admin_sistema(self, client):
         """Rol admin_sistema intentando invocar link-students -> 403 Forbidden."""
         token = create_access_token(data=sys_admin_payload())
-        with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False):
+        with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False), \
+             patch("app.services.auth_service.auth_service.assert_account_available"):
             response = client.post(
                 f"{PARENT_BASE_URL}/link-students",
                 headers={"Authorization": f"Bearer {token}"},
@@ -731,6 +734,7 @@ class TestParentProfileRBAC:
         """Token de otro rol -> 403 en los cuatro endpoints, sin tocar la BD."""
         token = create_access_token(data=claims)
         with patch("app.services.auth_service.auth_service.is_token_revoked", return_value=False), \
+                patch("app.services.auth_service.auth_service.assert_account_available"), \
                 patch(f"{SERVICE_MODULE}.supabase") as mock_sb, \
                 patch.object(profile_photo_service, "supabase") as mock_photo_sb:
             response = getattr(client, method)(
