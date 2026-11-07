@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from datetime import date
 from typing import Optional
 
@@ -18,6 +18,35 @@ class AdminLoginCreate(LoginBase):
     Esquema separado de `ClientLoginCreate` para poder exigir en el futuro campos exclusivos del
     portal de administración (ej. un segundo factor) sin afectar al de clientes.
     """
+
+#: bcrypt (>=5) rechaza con ValueError cualquier contraseña de más de 72 bytes.
+BCRYPT_MAX_PASSWORD_BYTES = 72
+
+
+class PasswordChangeCreate(BaseModel):
+    """Datos para que el usuario autenticado cambie su propia contraseña (`POST /auth/change-password`).
+
+    La confirmación de la nueva contraseña se valida en el cliente. El usuario se
+    identifica por el claim `sub` del token, nunca por un id del cuerpo.
+    """
+
+    current_password: str = Field(
+        ..., min_length=1, description="Contraseña vigente de la cuenta; confirma la identidad del usuario."
+    )
+    new_password: str = Field(
+        ...,
+        min_length=8,
+        description="Nueva contraseña en texto plano (mínimo 8 caracteres, máximo 72 bytes); se almacena hasheada.",
+    )
+
+    @field_validator("current_password", "new_password")
+    @classmethod
+    def validate_bcrypt_length(cls, value: str) -> str:
+        """Rechaza con 422 las contraseñas que bcrypt no puede procesar."""
+        if len(value.encode("utf-8")) > BCRYPT_MAX_PASSWORD_BYTES:
+            raise ValueError(f"La contraseña no puede superar los {BCRYPT_MAX_PASSWORD_BYTES} bytes.")
+        return value
+
 
 class SystemAdminRegister(BaseModel):
     """Datos de registro de un administrador de sistema."""

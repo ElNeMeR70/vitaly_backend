@@ -5,7 +5,7 @@ import logging
 from fastapi import HTTPException, status
 from app.core.database import supabase
 from app.core.security import get_password_hash, verify_password, create_access_token
-from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorRegister, ParentRegister, LoginBase, Token
+from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorRegister, ParentRegister, LoginBase, PasswordChangeCreate, Token
 from app.schemas.enums import SCOPE_ROLES, TokenScope, UserRole
 import uuid
 from datetime import datetime
@@ -305,6 +305,79 @@ class AuthService:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="No se pudo iniciar sesión. Inténtalo de nuevo más tarde.",
+            ) from exc
+
+    def change_password(self, user_id: int, data: PasswordChangeCreate) -> str:
+        """Cambia la contraseña del usuario autenticado tras verificar la vigente.
+
+        La sesión actual se mantiene: el token con el que se hace la petición no se
+        revoca. Las demás sesiones abiertas siguen siendo válidas hasta su expiración,
+        porque el JWT no lleva ninguna marca ligada a la contraseña.
+
+        Args:
+            user_id: ID del usuario autenticado, tomado del claim ``sub`` del token.
+            data: Contraseña vigente y nueva contraseña.
+
+        Returns:
+            str: Mensaje de confirmación del cambio.
+
+        Raises:
+            HTTPException: 400 si la contraseña vigente es incorrecta o la nueva
+                coincide con ella (nunca 401: el cliente trata un 401 como sesión
+                expirada); 403 si la cuenta está inactiva; 404 si el usuario no existe
+                o fue eliminado; 500 si falla una consulta o cualquier otra operación
+                inesperada.
+        """
+        try:
+            user_response = (
+                supabase.table("user")
+                .select("id, password, is_active")
+                .eq("id", user_id)
+                .eq("is_deleted", False)
+                .execute()
+            )
+            if not user_response.data:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="El usuario no existe.")
+
+            user = user_response.data[0]
+
+            if not user.get("is_active", False):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="La cuenta está inactiva; no se puede cambiar la contraseña.",
+                )
+
+            if not verify_password(data.current_password, user["password"]):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="La contraseña actual es incorrecta.",
+                )
+
+            if data.new_password == data.current_password:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="La nueva contraseña debe ser distinta de la actual.",
+                )
+
+            update_response = (
+                supabase.table("user")
+                .update({"password": get_password_hash(data.new_password)})
+                .eq("id", user_id)
+                .eq("is_deleted", False)
+                .execute()
+            )
+            # La fila pudo eliminarse entre la lectura y la escritura.
+            if not update_response.data:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="El usuario no existe.")
+
+            return "Contraseña actualizada"
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Error inesperado al cambiar la contraseña del usuario %s", user_id)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No se pudo cambiar la contraseña. Inténtalo de nuevo más tarde.",
             ) from exc
 
     def revoke_token(self, token: str, expires_at: int):

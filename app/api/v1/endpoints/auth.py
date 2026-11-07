@@ -1,11 +1,13 @@
-"""Autenticación: registro por rol, login y revocación de sesión."""
+"""Autenticación: registro por rol, login, cambio de contraseña y revocación de sesión."""
+
+from typing import Annotated
 
 from fastapi import APIRouter, Depends
 from fastapi.security import HTTPAuthorizationCredentials
 
 from app.api.deps import get_current_user_token, security
-from app.core.openapi_responses import BAD_REQUEST, PROTECTED_RESPONSES, PUBLIC_RESPONSES, error_response
-from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorRegister, ParentRegister, ClientLoginCreate, AdminLoginCreate, Token
+from app.core.openapi_responses import BAD_REQUEST, PROTECTED_RESPONSES, PUBLIC_RESPONSES, UNAUTHORIZED, UNPROCESSABLE, error_response
+from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorRegister, ParentRegister, ClientLoginCreate, AdminLoginCreate, PasswordChangeCreate, Token
 from app.schemas.enums import TokenScope
 from app.schemas.responses import APIResponse
 from app.services.auth_service import auth_service
@@ -33,6 +35,29 @@ LOGIN_ERROR_RESPONSES = {
 
 #: Registro: cualquiera puede solicitarlo; el 400 cubre el correo ya existente.
 _REGISTER_RESPONSES = {**PUBLIC_RESPONSES, **BAD_REQUEST}
+
+#: Cambio de contraseña: la contraseña vigente incorrecta es un 400, no un 401, para que el
+#: cliente no la confunda con una sesión expirada.
+_CHANGE_PASSWORD_RESPONSES = {
+    **error_response(
+        400,
+        "Bad Request: la contraseña actual es incorrecta o la nueva coincide con ella.",
+        "La contraseña actual es incorrecta.",
+    ),
+    **UNAUTHORIZED,
+    **error_response(
+        403,
+        "Forbidden: la cuenta está inactiva.",
+        "La cuenta está inactiva; no se puede cambiar la contraseña.",
+    ),
+    **error_response(404, "Not Found: el usuario del token no existe o fue eliminado.", "El usuario no existe."),
+    **UNPROCESSABLE,
+    **error_response(
+        500,
+        "Internal Server Error: no se pudo cambiar la contraseña.",
+        "No se pudo cambiar la contraseña. Inténtalo de nuevo más tarde.",
+    ),
+}
 
 
 # PUBLIC_ROUTE
@@ -217,6 +242,42 @@ def logout(
     expires_at = payload.get("exp")
     auth_service.revoke_token(token, expires_at)
     return APIResponse(data="Logout exitoso", message="Sesión cerrada correctamente")
+
+
+@router.post(
+    "/change-password",
+    response_model=APIResponse[str],
+    summary="Cambiar la contraseña propia",
+    description=(
+        "Cambia la contraseña del usuario autenticado tras verificar la contraseña "
+        "actual. Admite tokens de ambos portales (cualquier rol). La sesión actual "
+        "se mantiene; las demás sesiones abiertas siguen siendo válidas hasta que "
+        "expiran. Una contraseña actual incorrecta responde 400, no 401."
+    ),
+    responses=_CHANGE_PASSWORD_RESPONSES,
+)
+def change_password(
+    payload: Annotated[dict, Depends(get_current_user_token)],
+    data: PasswordChangeCreate,
+):
+    """Cambia la contraseña de la cuenta identificada por el claim sub del token.
+
+    Multi-tenancy:
+        No aplica: solo modifica la fila de 'user' del usuario autenticado. El cuerpo
+        no acepta ningún id de usuario.
+
+    RBAC:
+        Requiere cualquier rol autenticado mediante Bearer token, de cualquier portal.
+
+    Raises:
+        HTTPException(400): Si la contraseña actual es incorrecta o la nueva coincide con ella.
+        HTTPException(401): Si el token es inválido, expiró o fue revocado.
+        HTTPException(403): Si la cuenta está inactiva.
+        HTTPException(404): Si el usuario no existe o fue eliminado.
+        HTTPException(500): Si falla una operación interna del cambio.
+    """
+    msg = auth_service.change_password(user_id=int(payload["sub"]), data=data)
+    return APIResponse(data=msg, message="Contraseña actualizada correctamente")
 
 
 # PUBLIC_ROUTE
