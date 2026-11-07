@@ -17,11 +17,13 @@ los nombres en `classroom_category(id, classroom_type_name)` por lote y devuelve
   consultas por salón. Si no hay categorías que resolver, se omite ese acceso.
 - La consulta modificada de salones filtra por el `school_id` del administrador
   resuelto en el servidor. El catálogo es global y no lleva filtro de escuela.
-- Los errores de consulta de salones/categorías se convierten en `HTTPException(500)`.
+- Los errores de consulta de salones/categorías se registran con `logger.exception`
+  y se convierten en `HTTPException(500)`. Las pruebas comprueban ambos pasos.
 
 Closes #61
 
-Base propuesta: `development`. Rama: `fix/GH-61`, basada en `7a9c611`.
+Base propuesta: `development`. Rama: `fix/GH-61`, creada desde `7a9c611`
+e integrada con `development` en `452bc21` antes de la validación final.
 Una sola unidad revisable: corrección, pruebas y documentación. La autorización
 explícita posterior del usuario habilita commit, push, PR, revisión y merge a
 `development`, sustituyendo la parada en borrador de `triggerMode: manual`.
@@ -39,7 +41,7 @@ No requiere dependencias nuevas, variables de entorno ni migraciones.
 
 ## ¿Cómo se ha probado esto?
 
-- [x] `python -m pytest tests/ -q`: **508 passed**, 63 advertencias de deprecación
+- [x] `python -m pytest tests/ -q`: **548 passed**, 63 advertencias de deprecación
   de Pydantic/Starlette en código que esta corrección no modifica.
 - [x] `python -m pytest tests/test_event_classroom_labels.py -q`: **27 passed**.
   Ejecuta el servicio desde filas numéricas con un cliente Supabase en memoria

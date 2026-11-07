@@ -146,7 +146,8 @@ def test_detail_empty_or_foreign_classrooms_skip_catalog(detail_db, rows):
 def test_detail_query_failure_becomes_http_500(detail_db, table):
     db, _, run = detail_db
     db.failing_table = table
-    with pytest.raises(HTTPException) as exc:
+    with patch(f"{SERVICE_MODULE}.logger") as logger, pytest.raises(HTTPException) as exc:
         run([classroom()])
+    logger.exception.assert_called_once_with("Error al consultar los salones o categorías del evento")
     assert exc.value.status_code == 500
     assert exc.value.detail == "No se pudieron obtener los salones del evento."

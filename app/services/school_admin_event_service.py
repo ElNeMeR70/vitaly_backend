@@ -5,6 +5,7 @@ El alcance se resuelve siempre en el servidor: el ``sch_admin_id`` y el
 tiene una participación registrada a nombre de ese administrador.
 """
 
+import logging
 import re
 
 from fastapi import HTTPException
@@ -15,6 +16,7 @@ from datetime import datetime, date, timezone
 
 # Sufijo de zona horaria al final de un timestamp ISO 8601: ``Z``, ``+00:00``, ``-0400`` o ``+05``.
 _TZ_SUFFIX = re.compile(r"(Z|[+-]\d{2}(:?\d{2})?)$")
+logger = logging.getLogger(__name__)
 
 
 class SchoolAdminEventService:
@@ -464,6 +466,7 @@ class SchoolAdminEventService:
                     )
                     categories = {c["id"]: c.get("classroom_type_name") for c in category_res.data}
             except Exception as exc:
+                logger.exception("Error al consultar los salones o categorías del evento")
                 raise HTTPException(status_code=500, detail="No se pudieron obtener los salones del evento.") from exc
             classrooms_info = [
                 {
