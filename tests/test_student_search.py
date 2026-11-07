@@ -30,14 +30,17 @@ from app.core.security import create_access_token
 from app.main import app
 from app.services.auth_service import auth_service
 from app.services.doctor_event_service import ACTIVE_DOCTOR_SCHOOL_STATUS
-from tests.fake_supabase import FakeSupabase
+from app.services.student_search_service import _escape_like
+from tests.fake_supabase import FakeQuery, FakeSupabase
 
 ADMIN_URL = "/api/v1/school-admin/search/students"
 DOCTOR_URL = "/api/v1/doctor/students/search"
 
-#: Los tres servicios implicados importan `supabase` en su propio módulo.
+#: Cada servicio implicado importa su cliente en su propio módulo. La búsqueda lee
+#: la vista con el cliente privilegiado, porque la migración se la deniega a `anon`;
+#: los resolvedores de alcance siguen usando el cliente normal.
 SUPABASE_TARGETS = (
-    "app.services.student_search_service.supabase",
+    "app.services.student_search_service.supabase_admin",
     "app.services.school_admin_service.supabase",
     "app.services.doctor_event_service.supabase",
 )
@@ -380,7 +383,12 @@ def test_text_search_is_partial_and_case_insensitive(admin_client):
 
 
 def test_text_search_escapes_wildcards(admin_client):
-    """Un comodín escrito por el usuario se busca literal, no amplía el resultado."""
+    """Un comodín escrito por el usuario no amplía el resultado.
+
+    Limitación conocida: este caso se apoya en que `tests/fake_supabase.py` honra el
+    escape igual que SQL. Demuestra la intención del servicio, no el comportamiento
+    de PostgREST. Los dos tests siguientes cubren el límite real.
+    """
     fake = build_db([student_row(31, "Juan Pérez"), student_row(32, "Marco Solís")])
     with patch_supabase(fake):
         response = admin_client.get(ADMIN_URL, params={"q": "%"})
@@ -487,6 +495,9 @@ def test_doctor_search_records_an_audit_entry(doctor_client):
     kwargs = audit.record.call_args.kwargs
     assert kwargs["action"] == "read"
     assert kwargs["actor"]["sub"] == str(DOCTOR_USER_ID)
+    # El alcance resuelto, no el query param: un NULL aquí significaría
+    # "acción global de admin_sistema" según el COMMENT de la migración.
+    assert kwargs["school_id"] == SCHOOL_ID
     assert kwargs["metadata"]["searched_school_ids"] == [SCHOOL_ID]
     assert kwargs["metadata"]["filters"]["bmi_status"] == "SOBREPESO"
     assert kwargs["metadata"]["total_matches"] == 1
@@ -577,3 +588,113 @@ def test_invalid_query_params_return_422(admin_client, params):
 
     assert response.status_code == 422
     assert response.json()["success"] is False
+
+def test_audit_records_one_entry_per_searched_school(doctor_client):
+    """Sin 'school_id' el médico busca en varias escuelas: una fila de bitácora por cada una.
+
+    Antes se registraba una sola fila con el query param del cliente, que en este
+    caso llega vacío: la columna quedaba NULL, que la migración reserva para las
+    acciones globales de admin_sistema, y el índice por escuela no servía.
+    """
+    fake = build_db(
+        [student_row(1, "Juan Pérez"),
+         student_row(3, "Carla Díaz", school_id=THIRD_SCHOOL_ID)],
+        links=[
+            {"doctor_id": DOC_ID, "school_id": SCHOOL_ID, "status": ACTIVE_DOCTOR_SCHOOL_STATUS},
+            {"doctor_id": DOC_ID, "school_id": THIRD_SCHOOL_ID, "status": ACTIVE_DOCTOR_SCHOOL_STATUS},
+        ],
+    )
+    with patch_supabase(fake), \
+            patch("app.api.v1.endpoints.doctor_students.audit_service") as audit:
+        response = doctor_client.get(DOCTOR_URL)
+
+    assert response.status_code == 200
+    registradas = [c.kwargs["school_id"] for c in audit.record.call_args_list]
+    assert sorted(registradas) == [SCHOOL_ID, THIRD_SCHOOL_ID]
+    assert all(c.kwargs["school_id"] is not None for c in audit.record.call_args_list)
+    # Todas las filas comparten el alcance completo, para poder correlacionarlas.
+    for call in audit.record.call_args_list:
+        assert call.kwargs["metadata"]["searched_school_ids"] == [SCHOOL_ID, THIRD_SCHOOL_ID]
+
+
+def test_audit_is_not_recorded_when_scope_is_empty(doctor_client):
+    """Médico suspendido: no hay escuela consultada, así que no hay nada que auditar."""
+    fake = build_db(
+        [student_row(1, "Juan Pérez")],
+        links=[{"doctor_id": DOC_ID, "school_id": SCHOOL_ID, "status": SUSPENDED_STATUS}],
+    )
+    with patch_supabase(fake), \
+            patch("app.api.v1.endpoints.doctor_students.audit_service") as audit:
+        response = doctor_client.get(DOCTOR_URL)
+
+    assert response.status_code == 200
+    audit.record.assert_not_called()
+
+
+# ──────────────────────────────────────────────────────────
+# 10. La vista no se lee con la clave pública
+# ──────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("url,client_fixture", [(ADMIN_URL, "admin_client"), (DOCTOR_URL, "doctor_client")])
+def test_search_requires_the_privileged_client(request, url, client_fixture):
+    """Sin SUPABASE_SERVICE_KEY la búsqueda falla; nunca cae de vuelta a la clave anónima.
+
+    La migración deniega la vista a `anon` porque cruza datos de salud de todas las
+    escuelas. Si el servicio volviera a leerla con el cliente normal, este test
+    pasaría a verde en producción y la denegación sería inútil.
+    """
+    http = request.getfixturevalue(client_fixture)
+    fake = build_db([student_row(1, "Juan Pérez")])
+    with ExitStack() as stack:
+        stack.enter_context(patch("app.services.school_admin_service.supabase", fake))
+        stack.enter_context(patch("app.services.doctor_event_service.supabase", fake))
+        stack.enter_context(patch("app.services.student_search_service.supabase_admin", None))
+        stack.enter_context(patch("app.services.audit_service.supabase_admin", None))
+        response = http.get(url)
+
+    assert response.status_code == 500
+    body = response.json()
+    assert body["success"] is False
+    assert "no está disponible" in body["message"]
+
+def test_service_escapes_the_pattern_before_sending_it(admin_client):
+    """El escape ocurre en el servicio, no en el doble: se captura lo que se envía.
+
+    El test anterior pasaría igual si el servicio no escapara y el doble tampoco
+    interpretara comodines. Este fija el contrato en el punto donde sale la consulta.
+    """
+    fake = build_db([student_row(1, "Juan Pérez")])
+    enviado = []
+    original = FakeQuery.ilike
+
+    def spy(self, column, pattern):
+        enviado.append((column, pattern))
+        return original(self, column, pattern)
+
+    with patch_supabase(fake), patch.object(FakeQuery, "ilike", spy):
+        admin_client.get(ADMIN_URL, params={"q": "50%"})
+
+    assert enviado == [("full_name", "%50\\%%")]
+
+
+@pytest.mark.parametrize("raw,esperado", [
+    ("juan", "ilike.%juan%"),
+    ("50%", "ilike.%50\\%%"),
+    ("a_b", "ilike.%a\\_b%"),
+])
+def test_escaped_pattern_survives_postgrest_serialization(raw, esperado):
+    """La barra de escape sobrevive hasta el filtro que viaja en la URL.
+
+    Se ejerce la librería real (`postgrest`), no el doble, que es lo más lejos que
+    se puede verificar sin una instancia de Supabase. Lo que queda fuera de alcance
+    y exige comprobación de integración es si PostgREST honra `\\%` como literal.
+    """
+    from postgrest import SyncPostgrestClient
+
+    client = SyncPostgrestClient("http://localhost:3000", schema="public", headers={})
+    query = (
+        client.from_("student_health_status")
+        .select("student_id")
+        .ilike("full_name", f"%{_escape_like(raw)}%")
+    )
+    assert dict(query.request.params)["full_name"] == esperado
