@@ -33,7 +33,7 @@ from app.services.school_admin_service import school_admin_service
 
 logger = logging.getLogger(__name__)
 
-#: Vista creada por la migración ``20261106120000_create_student_health_status_view.sql``.
+#: Vista creada por la migración ``20261107120000_create_student_health_status_view.sql``.
 _VIEW = "student_health_status"
 
 #: Columnas expuestas por la búsqueda. Se enumeran en lugar de usar ``*`` para no

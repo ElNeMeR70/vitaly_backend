@@ -47,7 +47,7 @@ class BmiStatus(str, Enum):
     Replica literalmente la clasificación que ya emite
     ``SchoolAdminService.get_students_by_classroom``
     (``app/services/school_admin_service.py:554-565``) y el ``CASE`` de la vista
-    ``student_health_status`` (migración ``20261106120000``). Las tres deben
+    ``student_health_status`` (migración ``20261107120000``). Las tres deben
     moverse juntas; mientras tanto, este enum es la única fuente del vocabulario
     para los endpoints nuevos.
 

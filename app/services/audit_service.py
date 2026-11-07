@@ -3,7 +3,7 @@
 Registra accesos y cambios sobre datos médicos/PHR, aprobaciones de usuarios,
 acciones globales de ``admin_sistema`` y exportaciones, según la skill
 ``audit-logging``. Hasta el issue #66 el proyecto no tenía tabla de auditoría;
-la crea la migración ``20261106120100_create_audit_log_table.sql``.
+la crea la migración ``20261107120100_create_audit_log_table.sql``.
 
 La tabla ``audit_log`` conserva RLS activo y sin políticas, igual que
 ``settings``: la ``anon key`` no puede leerla ni escribirla por la Data API, así
