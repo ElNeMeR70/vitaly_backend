@@ -1,12 +1,16 @@
 """Estudiantes y representantes de la escuela del administrador autenticado."""
 
+from typing import Annotated, Optional
+
 from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import get_current_admin_escuela
 from app.core.openapi_responses import BAD_REQUEST, TENANT_DETAIL_RESPONSES, TENANT_RESPONSES
-from app.schemas.responses import APIResponse
-from app.schemas.student import StudentUpdateSchoolAdmin
+from app.schemas.enums import BmiStatus
+from app.schemas.responses import APIResponse, PaginationMeta
+from app.schemas.student import StudentHealthRead, StudentUpdateSchoolAdmin
 from app.services.school_admin_service import school_admin_service
+from app.services.student_search_service import student_search_service
 
 router = APIRouter()
 
@@ -271,4 +275,94 @@ def deactivate_student(
     return APIResponse(data=result, message="Estudiante desactivado exitosamente")
 
 
+# ──────────────────────────────────────────────────────────
+# GET - Búsqueda global de estudiantes de la escuela
+# ──────────────────────────────────────────────────────────
+#
+# NOTA CONOCIDA — divergencia asumida con GET /school-admin/students/resume.
+# Las cifras de este buscador no cuadran con las tarjetas del resumen. El resumen
+# cuenta filas de student_metrics en vez de estudiantes distintos
+# (school_admin_service.py:333), absorbe los "SIN DATOS" dentro de optimal_students
+# por resta (:353) y usa una definición más estrecha de caso activo (:346-347).
+# Este endpoint reutiliza la clasificación del listado por salón (:554-565) y
+# end_date IS NULL (:529), sin modificarlas. La unificación se aborda en #63, #64
+# y #65; este endpoint expone la lógica vigente, no la corrige.
+#
+# La ruta es /search/students y no /students/search porque /students/{student_id}
+# ya existe en este módulo y capturaría "search" como id (422). Además mantiene la
+# simetría con /search/representatives, que vive unas líneas más arriba.
 
+@router.get("/search/students", response_model=APIResponse[list[StudentHealthRead]],
+    summary="Buscar estudiantes de la escuela",
+    description=(
+        "Búsqueda paginada entre **todos** los estudiantes de la escuela inscritos en el año "
+        "académico vigente, sin necesidad de elegir un salón. Los filtros son opcionales e "
+        "independientes, salvo los de salón, que son jerárquicos: 'grade' exige 'category' y "
+        "'section' exige ambos. Devuelve el estado nutricional por IMC y si el estudiante "
+        "tiene algún caso médico abierto."
+    ),
+    responses={**TENANT_RESPONSES, **BAD_REQUEST},
+)
+def search_students(
+    admin_payload: Annotated[dict, Depends(get_current_admin_escuela)],
+    q: Optional[str] = Query(
+        None,
+        min_length=1,
+        description="Texto a buscar en el nombre completo del estudiante. Coincidencia parcial, sin distinguir mayúsculas.",
+    ),
+    bmi_status: Optional[BmiStatus] = Query(
+        None,
+        description="Estado nutricional por IMC: DESNUTRIDO (<18.5), OPTIMO (18.5-24.9), SOBREPESO (>24.9) o 'SIN DATOS' (sin medición vigente).",
+    ),
+    has_active_medical_case: Optional[bool] = Query(
+        None,
+        description="True devuelve solo estudiantes con un caso médico sin cerrar; False solo los que no lo tienen. Si se omite, ambos.",
+    ),
+    category: Optional[int] = Query(None, description="ID de la categoría del salón (ej. 1=PREESCOLAR)."),
+    grade: Optional[int] = Query(None, description="Nivel o grado del salón. Requiere 'category'."),
+    section: Optional[str] = Query(None, description="Letra de la sección (ej. 'A'). Requiere 'category' y 'grade'."),
+    page: int = Query(1, ge=1, description="Número de página (empieza en 1)."),
+    size: int = Query(20, ge=1, le=100, description="Elementos por página (máximo 100)."),
+):
+    """Busca estudiantes de la escuela aplicando filtros opcionales.
+
+    Multi-tenancy:
+        El 'school_id' se resuelve en el servidor a partir del usuario autenticado
+        (admin_payload['sub']); el cliente nunca lo envía. La vista
+        'student_health_status' expone 'school_id' como columna, de modo que el
+        filtro de escuela se aplica en la propia consulta.
+
+    RBAC:
+        Requiere rol admin_escuela autenticado mediante Bearer token.
+
+    Raises:
+        HTTPException(400): Si se envía 'grade' sin 'category', o 'section' sin
+            'category' y 'grade'.
+        HTTPException(401): Si el token es inválido, expiró o fue revocado.
+        HTTPException(403): Si el rol no es admin_escuela, o si el usuario no está
+            vinculado a ninguna escuela.
+        HTTPException(500): Si la consulta a la vista falla.
+    """
+    user_id = int(admin_payload["sub"])
+    students, total = student_search_service.search_for_school_admin(
+        user_id=user_id,
+        page=page,
+        size=size,
+        q=q,
+        bmi_status=bmi_status,
+        has_active_medical_case=has_active_medical_case,
+        category=category,
+        grade=grade,
+        section=section,
+    )
+    return APIResponse(
+        data=students,
+        message="Búsqueda de estudiantes completada exitosamente" if students
+                else "No se encontraron estudiantes que cumplan los filtros",
+        meta=PaginationMeta(
+            page=page,
+            size=size,
+            total=total,
+            total_pages=(total + size - 1) // size,
+        ),
+    )

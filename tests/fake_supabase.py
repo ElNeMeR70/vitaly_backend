@@ -23,6 +23,7 @@ Sigue siendo un doble: no valida nombres de columna (PostgREST devolvería 400 a
 una columna inexistente) ni implementa joins anidados.
 """
 
+import re
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -46,6 +47,32 @@ def _as_instant(value):
         except ValueError:
             return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _like_to_regex(pattern: str):
+    """Traduce un patrón LIKE de PostgREST a una expresión regular.
+
+    Fidelidad con PostgREST, donde importa: ``%`` y ``_`` son comodines, ``*`` es
+    un alias de ``%`` que PostgREST acepta por conveniencia, y una barra invertida
+    escapa el carácter siguiente para buscarlo literal. Sin honrar el escape, un
+    test no distinguiría entre buscar "50%" y pedir la tabla entera.
+    """
+    out = []
+    i = 0
+    while i < len(pattern):
+        char = pattern[i]
+        if char == "\\" and i + 1 < len(pattern):
+            out.append(re.escape(pattern[i + 1]))
+            i += 2
+            continue
+        if char in ("%", "*"):
+            out.append(".*")
+        elif char == "_":
+            out.append(".")
+        else:
+            out.append(re.escape(char))
+        i += 1
+    return re.compile("".join(out), re.IGNORECASE | re.DOTALL)
 
 
 class FakeQuery:
@@ -89,6 +116,15 @@ class FakeQuery:
 
     def in_(self, column, values):
         self._rows = [r for r in self._rows if r.get(column, _MISSING) in values]
+        return self
+
+    def ilike(self, column, pattern):
+        # SQL: un NULL nunca casa con LIKE, ni siquiera con '%'.
+        regex = _like_to_regex(pattern)
+        self._rows = [
+            r for r in self._rows
+            if r.get(column) is not None and regex.fullmatch(str(r[column]))
+        ]
         return self
 
     # ── Filtros de rango (sobre instantes, no sobre texto) ─
