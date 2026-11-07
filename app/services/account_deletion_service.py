@@ -4,7 +4,7 @@ import logging
 
 from fastapi import HTTPException
 
-from app.core.database import supabase
+from app.core.database import supabase_admin
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +36,10 @@ class AccountDeletionService:
                 su rol actual no pertenece al portal; 409 si quedan obligaciones;
                 500 si falla la transacción. Ningún rechazo modifica datos.
         """
+        if supabase_admin is None:
+            raise HTTPException(status_code=500, detail="No se pudo eliminar la cuenta.")
         try:
-            result = supabase.rpc("delete_own_account", {
+            result = supabase_admin.rpc("delete_own_account", {
                 "p_user_id": user_id,
                 "p_token": token,
                 "p_expires_at": expires_at,

@@ -30,7 +30,7 @@ def available_account():
 @pytest.mark.parametrize("role", ["admin_escuela", "doctor", "representante"])
 def test_delete_own_account_success(client, available_account, role):
     token = create_access_token({"sub": "41", "role": role, "scope": "client"})
-    with patch("app.services.account_deletion_service.supabase") as sb:
+    with patch("app.services.account_deletion_service.supabase_admin") as sb:
         sb.rpc.return_value.execute.return_value.data = "ok"
         # Un ID extraño aportado por el cliente no decide qué usuario se elimina.
         response = client.delete("/api/v1/auth/me?user_id=99&school_id=9",
@@ -64,7 +64,7 @@ def test_delete_own_account_system_admin_forbidden(client, available_account):
 ])
 def test_deletion_rejection_envelope(client, available_account, result, code):
     token = create_access_token({"sub": "41", "role": "doctor", "scope": "client"})
-    with patch("app.services.account_deletion_service.supabase") as sb:
+    with patch("app.services.account_deletion_service.supabase_admin") as sb:
         sb.rpc.return_value.execute.return_value.data = result
         response = client.delete("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == code
@@ -73,12 +73,21 @@ def test_deletion_rejection_envelope(client, available_account, result, code):
 
 
 def test_rpc_failure_is_sanitized(caplog):
-    with patch("app.services.account_deletion_service.supabase") as sb:
+    with patch("app.services.account_deletion_service.supabase_admin") as sb:
         sb.rpc.return_value.execute.side_effect = RuntimeError("secret-token")
         with pytest.raises(HTTPException) as caught:
             account_deletion_service.delete_own_account(41, "secret-token", 2000000000)
     assert caught.value.status_code == 500
     assert "secret-token" not in str(caught.value.detail) + caplog.text
+
+
+def test_missing_privileged_client_is_safe_and_never_uses_anon():
+    with patch("app.services.account_deletion_service.supabase_admin", None), \
+         patch("app.core.database.supabase") as anonymous:
+        with pytest.raises(HTTPException) as caught:
+            account_deletion_service.delete_own_account(41, "secret-token", 2000000000)
+    assert caught.value.status_code == 500
+    anonymous.rpc.assert_not_called()
 
 
 def test_deleted_user_login_still_returns_403(client):

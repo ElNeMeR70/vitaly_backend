@@ -6,7 +6,7 @@ Bloquea la baja del último administrador activo de una escuela, del médico con
 
 Los médicos eliminados dejan de aparecer en el listado y detalle escolar y no pueden recibir nuevas convocatorias. El listado filtra antes del conteo y paginación. El estado `school_administrator.status` se conserva: la inactividad efectiva se establece en `user.is_active=false`, sin inventar valores del catálogo de estados.
 
-Dependencia de despliegue: aplicar primero `supabase/migrations/20261106120000_delete_own_account.sql`. Añade una columna nullable y una RPC ejecutable solo por `service_role`; el cliente compartido debe disponer de ese rol. No hay nuevas dependencias Python ni variables de entorno para la aplicación. SQL validado en PostgreSQL 15.15 local desechable, con autorización del usuario; no aplicado a Supabase.
+Dependencia de despliegue: aplicar primero `supabase/migrations/20261106120000_delete_own_account.sql`. Añade una columna nullable y una RPC ejecutable solo por `service_role`; se usa exclusivamente el cliente privilegiado compartido. Requiere la variable ya existente `SUPABASE_SERVICE_KEY` en el entorno del backend; su ausencia produce 500 saneado sin escrituras. No hay nuevas dependencias Python. SQL validado en PostgreSQL 15.15 local desechable, con autorización del usuario; no aplicado a Supabase.
 
 El usuario autorizó explícitamente publicar la PR y la excepción `size:exception` para revisar la funcionalidad completa en una entrega. La configuración manual del repositorio queda sustituida por esa instrucción para esta tarea. Contrato: sin request body y `APIResponse[None]` (`data:null`); no cambia campos existentes del frontend. La conexión de las pantallas se sigue en Teixeira49/vitaly-care-for-families#7.
 
@@ -19,7 +19,7 @@ Closes #59
 
 ## ¿Cómo se ha probado esto?
 
-- [x] `pytest tests/`: 499 pruebas pasan; incluye contrato, permisos, claims, todas las sesiones y filtros de médicos.
+- [x] `pytest tests/`: 521 pruebas pasan; incluye contrato, permisos, claims, todas las sesiones y filtros de médicos.
 - [x] `ruff check app tests` y `git diff --check`.
 - [x] PostgreSQL desechable: aplicar migración, comprobar bloqueos de los tres roles, efectos, retención, rollback y permisos de RPC.
 - [x] PostgreSQL desechable: dos bajas simultáneas de los últimos administradores dejan uno activo.
@@ -36,7 +36,7 @@ Closes #59
 
 ## Lista de Verificación
 
-- [x] Cambios y dependencia de migración documentados; sin nuevas dependencias Python ni variables de aplicación.
+- [x] Cambios y dependencia de migración documentados; sin nuevas dependencias Python; requiere `SUPABASE_SERVICE_KEY`, ya existente.
 - [x] Endpoint síncrono, gate de clientes, identidad derivada de `sub` y envelope estándar.
 - [x] Docstrings y metadatos OpenAPI incluidos.
 - [x] Pruebas Python existentes y nuevas pasan; lint pasa.
