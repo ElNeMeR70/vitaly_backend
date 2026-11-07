@@ -23,6 +23,20 @@ class AdminLoginCreate(LoginBase):
 BCRYPT_MAX_PASSWORD_BYTES = 72
 
 
+def _validate_bcrypt_password_bytes(value: str) -> str:
+    """Rechaza con 422 las contraseñas que superan el límite de 72 bytes de bcrypt."""
+    if len(value.encode("utf-8")) > BCRYPT_MAX_PASSWORD_BYTES:
+        raise ValueError(f"La contraseña no puede superar los {BCRYPT_MAX_PASSWORD_BYTES} bytes.")
+    return value
+
+
+class _BcryptPasswordLimitMixin(BaseModel):
+    @field_validator("contraseña", check_fields=False)
+    @classmethod
+    def validate_contraseña_bcrypt_length(cls, value: str) -> str:
+        return _validate_bcrypt_password_bytes(value)
+
+
 class PasswordChangeCreate(BaseModel):
     """Datos para que el usuario autenticado cambie su propia contraseña (`POST /auth/change-password`).
 
@@ -48,7 +62,7 @@ class PasswordChangeCreate(BaseModel):
         return value
 
 
-class SystemAdminRegister(BaseModel):
+class SystemAdminRegister(_BcryptPasswordLimitMixin):
     """Datos de registro de un administrador de sistema."""
 
     nombre: str = Field(description="Nombre del administrador.")
@@ -58,7 +72,7 @@ class SystemAdminRegister(BaseModel):
     fecha_de_nacimiento: date = Field(description="Fecha de nacimiento (YYYY-MM-DD).")
 
 
-class SchoolAdminRegister(BaseModel):
+class SchoolAdminRegister(_BcryptPasswordLimitMixin):
     """Datos de registro de un administrador de escuela."""
 
     nombre: str = Field(description="Nombre del administrador escolar.")
@@ -74,7 +88,7 @@ class SchoolAdminRegister(BaseModel):
     )
 
 
-class DoctorRegister(BaseModel):
+class DoctorRegister(_BcryptPasswordLimitMixin):
     """Datos de registro de un médico escolar."""
 
     nombre: str = Field(description="Nombre del médico.")
@@ -86,7 +100,7 @@ class DoctorRegister(BaseModel):
     especially: str = Field(description="Especialidad médica, ej. 'Pediatría'.")
 
 
-class ParentRegister(BaseModel):
+class ParentRegister(_BcryptPasswordLimitMixin):
     """Datos de registro de un representante (padre, madre o tutor)."""
 
     nombre: str = Field(description="Nombre del representante.")

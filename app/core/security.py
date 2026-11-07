@@ -45,8 +45,15 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         ValueError: Si ``hashed_password`` no es un hash bcrypt válido.
     """
     plain_password_bytes = plain_password.encode('utf-8')
+    if len(plain_password_bytes) > 72:
+        return False
     hashed_password_bytes = hashed_password.encode('utf-8')
-    return bcrypt.checkpw(plain_password_bytes, hashed_password_bytes)
+    try:
+        return bcrypt.checkpw(plain_password_bytes, hashed_password_bytes)
+    except ValueError:
+        if not hashed_password.startswith(('$2a$', '$2b$', '$2y$')):
+            raise
+        return False
 
 def get_password_hash(password: str) -> str:
     """Genera el hash bcrypt de una contraseña, con salt aleatorio.

@@ -1386,3 +1386,121 @@ class TestChangePassword:
                 )
 
         assert exc_info.value.status_code == 404
+
+
+# ──────────────────────────────────────────────────────────
+# 9. Límite de 72 bytes de bcrypt en login y registro (GH-74)
+# ──────────────────────────────────────────────────────────
+
+class TestBcrypt72BytePasswordLimit:
+    @pytest.mark.parametrize(
+        ("login_path", "role"),
+        [
+            ("/client/login", "representante"),
+            ("/login", "representante"),
+            ("/admin/login", "admin_sistema"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "long_password",
+        [
+            "a" * 73,
+            "ñ" * 37,  # 37 caracteres = 74 bytes en UTF-8
+        ],
+    )
+    def test_login_password_over_72_bytes_returns_401_without_stack_trace(
+        self, client, caplog, login_path, role, long_password
+    ):
+        """Login con más de 72 bytes en UTF-8 responde 401 sin lanzar ValueError ni registrar stack trace."""
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(
+                mock_sb,
+                user=make_query([active_user()]),
+                user_roles=make_query([{"role": role}]),
+            )
+            response = client.post(
+                f"{AUTH_BASE_URL}{login_path}",
+                json={"email": "cuenta@vitaly.com", "password": long_password},
+            )
+
+        assert response.status_code == 401
+        body = response.json()
+        assert body["success"] is False
+        assert body["message"] == "Credenciales incorrectas"
+        assert not any(record.exc_info is not None for record in caplog.records)
+
+    @pytest.mark.parametrize(
+        ("endpoint", "extra_fields"),
+        [
+            ("/register-system-admin", {}),
+            (
+                "/register-school-admin",
+                {"school_id": 1, "administrative_position": "Directora"},
+            ),
+            (
+                "/register-doctor",
+                {"doc_license_number": 12345, "especially": "Pediatría"},
+            ),
+            (
+                "/register-parent",
+                {"identity_number": "V-12345678", "type_representative": "Madre"},
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "invalid_password",
+        [
+            "a" * 73,
+            "ñ" * 37,  # 74 bytes en UTF-8 (> 72 bytes)
+        ],
+    )
+    def test_register_password_over_72_bytes_returns_422(
+        self, client, endpoint, extra_fields, invalid_password
+    ):
+        """El registro con una contraseña > 72 bytes en UTF-8 responde 422 antes de tocar Supabase."""
+        payload = {
+            "nombre": "Ana",
+            "apellido": "López",
+            "correo": "nuevo@vitaly.com",
+            "contraseña": invalid_password,
+            "fecha_de_nacimiento": "1990-05-10",
+            **extra_fields,
+        }
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            response = client.post(f"{AUTH_BASE_URL}{endpoint}", json=payload)
+            mock_sb.table.assert_not_called()
+
+        assert response.status_code == 422
+        body = response.json()
+        assert body["success"] is False
+
+    def test_register_multibyte_password_within_72_bytes_succeeds(self, client):
+        """25 caracteres 'ñ' (50 bytes en UTF-8 <= 72 bytes) son aceptados en el registro."""
+        valid_multibyte_password = "ñ" * 25  # 50 bytes en UTF-8
+        user_insert = make_query([{"id": 99}])
+        roles_query = make_query([{"id": 1}])
+        sys_admin_query = make_query([{"admin_id": 99}])
+
+        user_table = MagicMock()
+        user_table.select.return_value = make_query([])
+        user_table.insert.return_value = user_insert
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(
+                mock_sb,
+                user=user_table,
+                user_roles=roles_query,
+                system_administrator=sys_admin_query,
+            )
+            payload = {
+                "nombre": "Carlos",
+                "apellido": "Mendoza",
+                "correo": "multibyte@vitaly.com",
+                "contraseña": valid_multibyte_password,
+                "fecha_de_nacimiento": "1985-04-12",
+            }
+            response = client.post(f"{AUTH_BASE_URL}/register-system-admin", json=payload)
+
+        assert response.status_code == 200
+        assert response.json()["success"] is True
+
