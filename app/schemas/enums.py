@@ -41,6 +41,28 @@ class BloodType(str, Enum):
     O_NEG = "O-"
 
 
+class BmiStatus(str, Enum):
+    """Estado nutricional de un estudiante según su IMC.
+
+    Replica literalmente la clasificación que ya emite
+    ``SchoolAdminService.get_students_by_classroom``
+    (``app/services/school_admin_service.py:554-565``) y el ``CASE`` de la vista
+    ``student_health_status`` (migración ``20261106120000``). Las tres deben
+    moverse juntas; mientras tanto, este enum es la única fuente del vocabulario
+    para los endpoints nuevos.
+
+    Umbrales vigentes: ``< 18.5`` desnutrido, ``18.5-24.9`` óptimo, ``> 24.9``
+    sobrepeso. El corte en 30 que separaría la obesidad se sigue en el issue #63.
+    """
+
+    DESNUTRIDO = "DESNUTRIDO"
+    OPTIMO = "OPTIMO"
+    SOBREPESO = "SOBREPESO"
+    #: El estudiante no tiene una medición vigente en ``student_metrics``.
+    #: El valor conserva el espacio por compatibilidad con el listado por salón.
+    SIN_DATOS = "SIN DATOS"
+
+
 class SettingKey(str, Enum):
     """Claves de la tabla `settings`: el tipo de configuración global del sistema.
 

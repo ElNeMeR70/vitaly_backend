@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
 from datetime import date
-from app.schemas.enums import Gender, BloodType
+from app.schemas.enums import Gender, BloodType, BmiStatus
 
 class StudentCreate(BaseModel):
     """Datos para registrar un estudiante en el sistema."""
@@ -111,4 +111,47 @@ class StudentUpdateSchoolAdmin(StudentUpdate):
 
     representative_id: Optional[int] = Field(
         default=None, description="ID del representante al que se vincula el estudiante."
+    )
+
+
+class StudentHealthRead(BaseModel):
+    """Estudiante tal como lo devuelve la búsqueda global (issue #66).
+
+    Proviene de la vista ``student_health_status``, que solo contiene estudiantes
+    inscritos en el año académico vigente. Expone los mismos campos de salud que
+    el listado por salón (``bmi_status`` y ``has_active_medical_case``) y añade la
+    ubicación del estudiante, imprescindible cuando el resultado ya no viene
+    acotado a un salón conocido.
+
+    No incluye peso ni talla en crudo: una búsqueda masiva no los necesita y
+    mantenerlos fuera reduce la exposición de datos de salud en la respuesta. El
+    detalle individual sigue siendo ``GET /school-admin/students/{student_id}``.
+    """
+
+    student_id: int = Field(description="Identificador único del estudiante.")
+    school_id: int = Field(description="Escuela a la que pertenece el salón donde está inscrito.")
+    name: str = Field(description="Nombre del estudiante.")
+    lastname: str = Field(description="Apellido del estudiante.")
+    full_name: str = Field(description="Nombre y apellido concatenados; es el campo sobre el que busca 'q'.")
+    birthday: Optional[date] = Field(default=None, description="Fecha de nacimiento del estudiante.")
+    gender: Optional[str] = Field(default=None, description="Género del estudiante.")
+    blood_type: Optional[str] = Field(default=None, description="Tipo de sangre del estudiante.")
+    identity_number: Optional[str] = Field(
+        default=None, description="Documento de identidad del estudiante (cédula escolar), si aplica."
+    )
+    is_active: bool = Field(description="True si el estudiante está activo en la escuela.")
+    classroom_id: int = Field(description="Salón del año académico vigente en el que está inscrito.")
+    category: Optional[int] = Field(default=None, description="ID de la categoría del salón (ej. 1=PREESCOLAR).")
+    level: Optional[int] = Field(default=None, description="Nivel o grado del salón.")
+    section: Optional[str] = Field(default=None, description="Letra de la sección del salón.")
+    academic_year_id: Optional[int] = Field(default=None, description="Año académico vigente del salón.")
+    bmi: Optional[float] = Field(
+        default=None,
+        description="Índice de masa corporal de la medición vigente, redondeado a dos decimales. Null si no hay medición.",
+    )
+    bmi_status: BmiStatus = Field(
+        description="Estado nutricional derivado del IMC. 'SIN DATOS' cuando el estudiante no tiene medición vigente."
+    )
+    has_active_medical_case: bool = Field(
+        description="True si el estudiante tiene al menos un caso médico sin fecha de cierre."
     )
